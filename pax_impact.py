@@ -190,7 +190,7 @@ def analyse(fid):
                     "delay_min": f["delay_min"], "delay_reason": info["delay_reason"] if info else None, "reason_source": info["reason_source"] if info else None,
                     "connecting_passengers": len(out), "affected_passengers": len(affected), "affected_connections": len({r["connecting_flight"] for r in affected}),
                     "unresolved": len(unresolved), "status": status},
-        "passengers": out, "groups": groups, "rules": RULES, "mct_source": MCT_SOURCE,
+        "passengers": out, "groups": groups, "rules": RULES, "mct_source": MCT_SOURCE, "bag_mct": need_bag,
         "data": {"computed_at": now.strftime("%H:%M:%S"), "as_of": as_of, "age_min": age,
                  "stale": bool(age is not None and age > RULES["STALE_AFTER_MIN"] and status != "resolved"),
                  "source": "SIMULATED dataset (Aviant seed): no live airline feed is connected",
@@ -235,9 +235,14 @@ def recommend(fid, pax_ids, by, overrides=None):
             skipped.append({"ref": pid, "reason": f"already in the approval queue (#{r['pending']['change_id']})"})
             continue
         opts = [a for a in r["alternatives"] if a["free_seats"] - taken.get(a["flight"], 0) > 0]
-        choice = next((a for a in opts if a["flight"] == overrides.get(pid)), None) or next((a for a in opts if a["bags_make_it"] or not r["bags"]), None) or (opts[0] if opts else None)
+        # A connection is approvable only when BOTH the passenger and their bags can make it: baggage is a hard condition.
+        feasible = [a for a in opts if a["bags_make_it"] or not r["bags"]]
+        want = overrides.get(pid)
+        choice = next((a for a in feasible if a["flight"] == want), None) if want else (feasible[0] if feasible else None)
         if not choice:
-            skipped.append({"ref": pid, "reason": "no alternative seats: needs manual handling (hotel / other carrier)"})
+            skipped.append({"ref": pid, "reason": "review required: bags cannot make " + want if want and any(a["flight"] == want for a in opts)
+                            else "review required: no flight that both passenger and bags can make" if opts
+                            else "no alternative seats: needs manual handling (hotel / other carrier)"})
             continue
         taken[choice["flight"]] = taken.get(choice["flight"], 0) + 1
         picked.append({"kind": "REBOOK", "pax_id": pid, "to_flight": choice["flight"]})

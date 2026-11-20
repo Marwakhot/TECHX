@@ -191,3 +191,11 @@ abbr[title] { text-decoration:underline dotted; cursor:help; }
 .px2-audit { border:1px solid var(--ln); border-radius:6px; padding:14px; margin-top:18px; background:var(--card); } .px2-audit a { color:var(--ink); }
 .px2-df { display:grid; grid-template-columns:1fr 1fr 1.5fr; gap:10px; padding:16px 24px; border-top:1px solid var(--ln); background:var(--hd); }
 @media (max-width:900px) { .px2 { padding:18px 16px; } .px2-head { grid-template-columns:1fr; } .px2-all { align-items:flex-start; } .px2-filters { flex-wrap:wrap; } .px2-search { width:100%; } .px2-key { width:min(400px, 90vw); } }
+
+/* Connection feasibility: passenger and baggage checked separately; both must pass to approve */
+.px2-fz { min-width:190px; font-size:12px; }
+.px2-ck { display:flex; flex-direction:column; margin-bottom:4px; } .px2-ck b { font-size:13px; } .px2-ck span { color:var(--mut); }
+.px2-ck.ok b { color:#2f8a52; } .px2-ck.no b { color:#b3362a; }
+.px2-fl { color:var(--mut); font-size:11px; }
+.px2-ra { margin-top:6px; border-left:3px solid #b3362a; padding:4px 8px; background:rgba(179,54,42,.06); line-height:1.4; }
+.px2-ra b { display:block; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:#b3362a; }

@@ -90,13 +90,36 @@ const PaxImpact = (() => {
 
   // ---------------- render (layout only; same data + same send/reveal endpoints) ----------------
   const DECIDE = ["failed", "missed", "needs", "risk"], DONE = ["rebooked", "pending"];
-  const tabOf = (p) => DONE.includes(bucket(p)) ? "approved" : DECIDE.includes(bucket(p)) || bagIssue(p) ? "decide" : "none";
+  const tabOf = (p) => DONE.includes(bucket(p)) ? "approved" : DECIDE.includes(bucket(p)) || bagIssue(p) || !feas(p).ok ? "decide" : "none";
   const chosen = (p) => { const a = p.alternatives || []; return a.find((x) => x.flight === P.override[p.ref]) || a.find((x) => x.bags_make_it || !p.bags) || a[0]; };
   function conf(p) {
     const a = chosen(p);
     if (!a || (p.missing || []).length > 1) return ["low", "Low confidence", 1];
     if ((p.missing || []).length || !a.bags_make_it && p.bags || p.status === "At risk") return ["med", "Medium confidence", 2];
     return ["high", "High confidence", 3];
+  }
+  // Connection feasibility: two separate checks on the connection that would be approved (the chosen rebooking, or the
+  // current onward flight). A row is approvable only when BOTH pass; otherwise it is "Review required" with a recommended action.
+  function feas(p) {
+    const b = bucket(p), bm = P.data.bag_mct, mct = P.data.rules.MCT_MIN, alts = p.alternatives || [];
+    const a = b === "rebooked" || b === "safe" ? null : chosen(p);
+    const flight = a ? a.flight : p.connecting_flight, conn = a ? a.connection_min : p.available_min;
+    if (conn == null) return { flight, pax: [false, "Connection time unknown"], bag: [false, "Unknown"], ok: false, action: "Hold for manual review: the connection time is unknown." };
+    const paxOk = a ? conn >= mct && a.free_seats > 0 : conn >= mct && b !== "missed";
+    const wrongPlace = !a && p.bags && p.bag_location && p.bag_location !== p.connecting_flight;
+    const bagOk = !p.bags || (a ? a.bags_make_it : conn >= bm && !wrongPlace);
+    const pax = [paxOk, paxOk ? `${conn} min, needs ${mct}` : !a && !alts.length && b !== "safe" ? "No flight they can make" : `${conn} min, needs ${mct}`];
+    const bag = [bagOk, !p.bags ? "No checked bags" : wrongPlace ? `Bags are on ${p.bag_location}` : `${conn} min, needs ${bm}`];
+    let action = "";
+    if (!paxOk) action = alts.length ? `Rebook the passenger: pick a flight with a free seat and at least ${mct} min to connect.`
+      : "Hold for manual review: no seat on a flight they can make (hotel or other carrier).";
+    else if (!bagOk) {
+      const both = alts.find((x) => x.bags_make_it && x.flight !== flight);
+      action = wrongPlace ? `Arrange baggage transfer: move the bags from ${p.bag_location} to ${flight}.`
+        : both ? `Rebook on ${both.flight} (${both.connection_min} min) so the passenger and bags travel together.`
+        : `Arrange a priority baggage transfer (bags need ${bm} min, this connection gives ${conn}) or hold for manual review.`;
+    }
+    return { flight, pax, bag, ok: paxOk && bagOk, action };
   }
   const recTxt = (a) => `Rebook ${a.flight} · ${a.departs} · ${a.connection_min} min connection`;
   const left = (p) => p.status === "Confirmed missed" || p.status === "Likely missed" || (p.departs_in_min ?? 1) <= 0
@@ -115,7 +138,7 @@ const PaxImpact = (() => {
     const T = { decide: [], approved: [], none: [] };
     all.forEach((p) => T[tabOf(p)].push(p));
     const reviewed = T.approved.length, totalDec = T.decide.length + reviewed;
-    const easy = T.decide.filter((p) => conf(p)[0] === "high" && !p.pending && chosen(p));
+    const easy = T.decide.filter((p) => conf(p)[0] === "high" && !p.pending && chosen(p) && feas(p).ok);
     P.tab = P.tab || "decide";
     const tabs = [["decide", "Needs your decision"], ["approved", "Approved"], ["none", "No action needed"]];
     P.root.innerHTML = `
@@ -175,9 +198,9 @@ const PaxImpact = (() => {
     if (!rows.length) return '<p class="muted px2-empty">No passengers match these filters.</p>';
     const vul = rows.filter((p) => p.assistance), oth = rows.filter((p) => !p.assistance);
     const allSel = rows.every((r) => P.sel.has(r.ref));
-    const grp = (t, rs) => rs.length ? `<tr class="px2-grp"><td colspan="7">${t}</td></tr>${rs.map(row).join("")}` : "";
+    const grp = (t, rs) => rs.length ? `<tr class="px2-grp"><td colspan="8">${t}</td></tr>${rs.map(row).join("")}` : "";
     return `<div class="px2-tw"><table class="px2-tbl"><thead><tr><th><input type="checkbox" data-all="1" ${allSel ? "checked" : ""} aria-label="Select all shown"></th>
-      <th>Passenger</th><th>Connection</th><th>Special needs</th><th>Situation</th><th>AI recommendation</th><th>Action</th></tr></thead>
+      <th>Passenger</th><th>Connection</th><th>Special needs</th><th>Situation</th><th>Connection feasibility</th><th>AI recommendation</th><th>Action</th></tr></thead>
       <tbody>${grp("Vulnerable · pinned to top", vul)}${grp("Other passengers · by time to connection", oth)}</tbody></table></div>`;
   }
   function row(p) {
@@ -187,17 +210,23 @@ const PaxImpact = (() => {
       : b === "rebooked" || b === "safe" ? `<div class="px2-rec static">${b === "rebooked" ? "Rebooked · approved booking recorded" : "Keep booking, no change needed"}</div>`
       : alts.length ? `<select class="px2-rec" data-alt="${h(p.ref)}">${alts.map((x) => `<option value="${h(x.flight)}" ${x === a ? "selected" : ""}>${h(recTxt(x))}${x.bags_make_it ? "" : " (bags may not make it)"}</option>`).join("")}</select>`
       : '<div class="px2-rec static">No alternative seats: manual handling</div>';
-    const act = p.pending || b === "rebooked" ? '<span class="px2-note">Approved</span>' : b === "safe" ? '<span class="px2-note">No action</span>'
+    const fz = feas(p), blocked = !fz.ok && !p.pending && b !== "rebooked";
+    const act = p.pending || b === "rebooked" ? '<span class="px2-note">Approved</span>'
+      : blocked ? `<button class="px2-btn" data-drawer="${h(p.ref)}">Review</button><span class="px2-note warn">Review required · approval blocked</span>`
+      : b === "safe" ? '<span class="px2-note">No action</span>'
       : !alts.length ? `<button class="px2-btn" data-drawer="${h(p.ref)}">Review</button><span class="px2-note warn">Needs your review</span>`
       : fail ? `<button class="px2-btn retry" data-sendone="${h(p.ref)}">Retry</button>`
       : ck === "low" ? `<button class="px2-btn" data-drawer="${h(p.ref)}">Review</button><span class="px2-note warn">Needs your review</span>`
       : `<button class="px2-btn dark" data-sendone="${h(p.ref)}">Approve</button>`;
     return `<tr class="px2-row" data-row="${h(p.ref)}">
-      <td><input type="checkbox" data-sel="${h(p.ref)}" ${P.sel.has(p.ref) ? "checked" : ""} ${p.pending || !alts.length ? "disabled" : ""} aria-label="Select ${h(p.ref)}"></td>
+      <td><input type="checkbox" data-sel="${h(p.ref)}" ${P.sel.has(p.ref) ? "checked" : ""} ${p.pending || !alts.length || blocked ? "disabled" : ""} aria-label="Select ${h(p.ref)}"></td>
       <td><b class="px2-name">${rv ? h(rv.name) : h(p.name_masked)}</b><div class="px2-pnr">PNR ${h(p.ref)}</div></td>
       <td><span class="px2-mono">${h(P.data.summary.flight)} → ${h(p.connecting_flight)}</span><div>${left(p)}</div></td>
       <td>${needs(p)}</td>
-      <td class="px2-sit">${h(situation(p))}${bagIssue(p) ? `<div><span class="px2-tag">Baggage · ${h(bagIssue(p))}</span></div>` : ""}</td>
+      <td class="px2-sit">${h(situation(p))}</td>
+      <td class="px2-fz"><div class="px2-ck ${fz.pax[0] ? "ok" : "no"}"><b>${fz.pax[0] ? "✓" : "✕"} Passenger</b><span>${h(fz.pax[1])}</span></div>
+        <div class="px2-ck ${fz.bag[0] ? "ok" : "no"}"><b>${fz.bag[0] ? "✓" : "✕"} Baggage</b><span>${h(fz.bag[1])}</span></div>
+        <div class="px2-fl">on ${h(fz.flight)}</div>${blocked ? `<div class="px2-ra"><b>Recommended action</b>${h(fz.action)}</div>` : ""}</td>
       <td>${rec}${fail ? `<div class="px2-err">${h(P.out.failed[p.ref].reason || "Last attempt " + FAILTXT[P.out.failed[p.ref].status])}</div>` : ""}
         <div class="px2-meta">${dots(cn)}<span>${cl}</span>${P.override[p.ref] ? '<span class="px2-tag">Edited</span>' : ""}<a href="#" data-drawer="${h(p.ref)}">View reasoning</a></div></td>
       <td class="px2-act">${act}</td></tr>`;
@@ -205,7 +234,7 @@ const PaxImpact = (() => {
   function drawer(rows) {
     const p = P.data.passengers.find((x) => x.ref === P.drawer);
     if (!p) return "";
-    const ids = visible(rows).map((x) => x.ref), i = ids.indexOf(p.ref), rv = P.revealed[p.ref], a = chosen(p), [, cl, cn] = conf(p), alts = p.alternatives || [];
+    const ids = visible(rows).map((x) => x.ref), i = ids.indexOf(p.ref), rv = P.revealed[p.ref], a = chosen(p), [, cl, cn] = conf(p), alts = p.alternatives || [], fz = feas(p);
     return `<div class="px2-scrim" data-close="1"></div><aside class="px2-drawer" role="dialog" aria-label="Why this recommendation">
       <div class="px2-dh"><span class="px2-cap">Why this recommendation</span><span><button data-nav="-1" ${i <= 0 ? "disabled" : ""}>‹</button> ${i + 1} of ${ids.length}
         <button data-nav="1" ${i >= ids.length - 1 ? "disabled" : ""}>›</button><button data-close="1">✕</button></span></div>
@@ -213,6 +242,10 @@ const PaxImpact = (() => {
         <div class="px2-dt"><h3>${rv ? h(rv.name) : h(p.name_masked)}</h3><span class="px2-pnr">PNR ${h(p.ref)}</span></div>
         <div>${needs(p)} <span class="px2-mono">${h(P.data.summary.flight)} → ${h(p.connecting_flight)}</span> ${left(p)}</div>
         <div class="px2-box"><span class="px2-cap">AI recommendation</span><b>${a ? h(recTxt(a)) : "No alternative seats: manual handling (hotel / other carrier)"}</b><div class="px2-meta">${dots(cn)}<span>${cl}</span></div></div>
+        <h4 class="px2-cap">Connection feasibility · on ${h(fz.flight)}</h4><div class="px2-fz">
+          <div class="px2-ck ${fz.pax[0] ? "ok" : "no"}"><b>${fz.pax[0] ? "✓" : "✕"} Passenger connection</b><span>${h(fz.pax[1])}</span></div>
+          <div class="px2-ck ${fz.bag[0] ? "ok" : "no"}"><b>${fz.bag[0] ? "✓" : "✕"} Baggage connection</b><span>${h(fz.bag[1])}</span></div>
+          ${fz.ok ? "" : `<div class="px2-ra"><b>Review required · recommended action</b>${h(fz.action)}</div>`}</div>
         <h4 class="px2-cap">Data used</h4><dl class="px2-dl"><dt>Inbound flight status</dt><dd>${h(P.data.summary.flight)} ${P.data.summary.delay_min ? `+${P.data.summary.delay_min} min` : "on time"}</dd>
           <dt>Seat availability</dt><dd>${alts.map((x) => h(x.flight)).join(" · ") || "none"}</dd><dt>Passenger profile</dt><dd>${p.assistance ? "Assistance recorded" : "No assistance"} · ${h(p.priority_category || "")}</dd>
           <dt>Bags</dt><dd>${p.bags ? `${p.bags} on ${h(p.bag_location || "unknown")}` : "none checked"}</dd></dl>
@@ -225,7 +258,7 @@ const PaxImpact = (() => {
         <details class="px2-audit"><summary><b>Personal data</b> · masked by default</summary>${rv ? `<p class="small">${h(rv.name)} · ${h(rv.assistance)} <a href="#" data-hide="${h(p.ref)}">Mask again</a></p>`
           : `<p class="small">Restricted. <a href="#" data-reveal="${h(p.ref)}">Reveal (controller PIN, audited)</a></p>`}</details>
       </div>
-      ${a && !p.pending && bucket(p) !== "rebooked" ? `<div class="px2-df"><button class="px2-btn dark" data-sendone="${h(p.ref)}">Approve</button><button class="px2-btn" data-edit="1">Edit</button>
+      ${a && fz.ok && !p.pending && bucket(p) !== "rebooked" ? `<div class="px2-df"><button class="px2-btn dark" data-sendone="${h(p.ref)}">Approve</button><button class="px2-btn" data-edit="1">Edit</button>
         <button class="px2-btn" data-sendone="${h(p.ref)}" data-next="1">Approve &amp; next</button></div>` : ""}
     </aside>`;
   }
@@ -242,6 +275,10 @@ const PaxImpact = (() => {
   // ---------------- events ----------------
   async function send(refs) {
     if (!me) { toast("Enter your name before sending a recommendation", "warn"); return q("#px-me")?.focus(); }
+    const rows = Object.fromEntries(P.data.passengers.map((p) => [p.ref, p])), blocked = refs.filter((x) => rows[x] && !feas(rows[x]).ok);
+    refs = refs.filter((x) => !blocked.includes(x));
+    if (blocked.length) toast(`${blocked.length} passenger(s) need review: passenger or baggage cannot make the connection, so approval is blocked`, "warn");
+    if (!refs.length) return;
     const r = await api("/api/pax/recommend", { flight_id: S.flight, pax_ids: refs, by: me, overrides: P.override });
     const box = r.staged.map((s) => s.status === "PENDING"
       ? `<div>⏳ Recommendation <b>#${s.id}</b> for ${s.passengers.length} passenger(s) is <b>awaiting controller approval</b> in the <a href="#/tab/log">approval queue</a>.</div>`
@@ -264,7 +301,7 @@ const PaxImpact = (() => {
       if (d.close) { P.drawer = null; return render(); }
       if (d.nav) { const ids = visible(curRows()).map((x) => x.ref); P.drawer = ids[ids.indexOf(P.drawer) + +d.nav] || P.drawer; return render(); }
       if (d.edit) { const r = q(`tr[data-row="${CSS.escape(P.drawer)}"] select`, P.root); P.drawer = null; render(); return q(`tr[data-row="${CSS.escape(r?.dataset.alt || "")}"] select`, P.root)?.focus(); }
-      if (d.approveall) { const refs = curRows().filter((p) => conf(p)[0] === "high" && !p.pending && chosen(p)).map((p) => p.ref);
+      if (d.approveall) { const refs = curRows().filter((p) => conf(p)[0] === "high" && !p.pending && chosen(p) && feas(p).ok).map((p) => p.ref);
         return send(refs).catch((err) => toast(err.message, "bad")); }
       if (d.sendone && d.next) { const ids = visible(curRows()).map((x) => x.ref); P.drawer = ids[ids.indexOf(d.sendone) + 1] || null; }
       else if (d.sendone) P.drawer = null;
