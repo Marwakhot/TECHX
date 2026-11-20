@@ -177,9 +177,12 @@ function globeScroll() {
   const top = z.getBoundingClientRect().top, p = clamp(-top / (z.offsetHeight - innerHeight));
   const v = clamp((p - 0.6) / 0.3); // side panels arrive once the globe has settled
   document.body.classList.toggle("hdr", inApp && p > 0.8); // header only after the opening name + globe
-  if (top < innerHeight * 0.75) brand.classList.add("in"); // the name blurs in as the dark arrives
-  brand.style.opacity = 1 - 0.55 * v; // stays behind the globe; softens a little as the side panels arrive
-  brand.style.transform = `translateY(${-6 * clamp(p / 0.6)}vh)`;
+  if (top < innerHeight * 0.75) brand.classList.add("in"); // the name blurs in above the half-risen globe
+  // as you scroll on, the name glides up and fades out before the rising globe can reach it (never behind the globe)
+  const out = clamp(p / 0.32), ease = out * out * (3 - 2 * out);
+  brand.style.opacity = 1 - ease;
+  brand.style.transform = `translateY(${-22 * ease}vh) scale(${1 - 0.06 * ease})`;
+  brand.style.visibility = ease >= 1 ? "hidden" : "visible";
   // opening: the top half of a big globe under the name; scrolling shrinks it into the centre
   disc.style.transform = `translateY(${83 * (1 - p)}%) scale(${1.8 - 0.8 * p})`;
   document.querySelectorAll(".live-side").forEach((s, i) => {

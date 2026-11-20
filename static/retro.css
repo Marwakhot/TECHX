@@ -256,7 +256,7 @@ details.how > div { background:var(--section); border:0; border-left:2px solid v
 /* ---------- live overview: the huge name behind the globe, as on the reference ---------- */
 .globe-zone { background:var(--deep-1); }
 .globe-stage { padding-top:96px; }
-.brand { top:13vh; left:-2vw; right:-2vw; z-index:0; }
+.brand { top:13vh; left:-2vw; right:-2vw; z-index:3; transform-origin:50% 0; }
 .app .brand-name { font-family:var(--font); font-stretch:125%; font-weight:500; letter-spacing:-.085em; line-height:.84; white-space:nowrap;
   font-size:clamp(64px, 19.5vw, 470px); margin:0; padding-right:.08em; }
 .app .brand-name span { background:linear-gradient(180deg, #312726 0%, #211a1a 40%, #0c0a0a 75%, #000 100%); -webkit-background-clip:text; background-clip:text; color:transparent; }
