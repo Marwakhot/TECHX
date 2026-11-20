@@ -245,7 +245,8 @@ const Extras = (() => {
       <div id="ga-hist"></div></div>
       <div id="x-aout">${X.atk ? "" : '<div class="ga-empty muted small">Run the fixed suite (instant) or add AI-invented attacks to review each attempt here.</div>'}</div>`;
     const go = (mode) => (e) => busy(e.target, async () => {
-      X.atk = await api("/api/redteam", { flight_id: q("#x-af").value, mode }); X.atkSel = "0"; X.atkFilter = ""; drawAttack(); drawHistory();
+      q("#x-aout").innerHTML = `<div class="gm-status run"><h3><span class="gm-live"></span>Attacking ${h(q("#x-af").value)}…</h3><span class="small muted">every attempt runs through the real defences · nothing will be saved</span></div><div class="gm-prog"><i class="ind"></i></div>`;
+      X.atk = await api("/api/redteam", { flight_id: q("#x-af").value, mode }); X.atkSel = "0"; X.atkFilter = ""; X.atkTab = "g"; X.atkPlay = true; drawAttack(); drawHistory();
     });
     q("#x-afix").onclick = go("fixed"); q("#x-arun").onclick = go("full");
     drawHistory();
@@ -266,36 +267,54 @@ const Extras = (() => {
   }
   const atkGroup = (it) => (it.t !== "atk" ? "Other probes" : it.a.suite === "ai" ? "AI-invented attacks" : "Fixed suite");
 
+  const GL = ["SCHEMA", "GUARD", "HITL"], GQ = { SCHEMA: "Is the request well-formed and on the whitelist?", GUARD: "Do the safety rules allow it?", HITL: "Does it still need the controller PIN?" };
+  const GC = { SCHEMA: "schema", GUARD: "guards", HITL: "controller" };
+  const gcell = (st) => (st === "scan" ? '<i class="gm-spin"></i>' : st === "pass" ? '<span class="gm-ok">✓ pass</span>' : st === "block" ? '<span class="gm-blk">BLOCKED</span>' : st === "skip" ? "—" : '<i class="gm-dot"></i>');
   function drawAttack() {
-    const r = X.atk, cnt = (k) => r.attacks.filter((a) => a.stopped_by === k).length, n = r.attacks.length;
-    const shown = attackItems().map((it, k) => ({ ...it, k: String(k) })).filter((it) => !X.atkFilter || (it.t === "atk" && it.a.stopped_by === X.atkFilter));
-    if (!shown.some((it) => it.k === X.atkSel)) X.atkSel = shown[0]?.k ?? "0";
-    const ok = r.state_unchanged && !r.committed;
-    const row = (it) => {
-      if (it.t === "atk") return `<b>${h(it.a.name || "Attack " + (it.i + 1))}</b>${layerTag(it.a.stopped_by)}<span class="small muted">${h(it.a.targets)}</span>`;
-      if (it.t === "inj") { const inj = r.injection, bad = inj.release_passed_guards;
-        return `<b>Prompt-injection probe</b>${inj.error ? tag("skipped", "warn") : tag(bad ? "check" : "held", bad ? "warn" : "ok")}<span class="small muted">A fake call planted in the transcripts</span>`; }
-      const b = r.immutability.filter((p) => p.blocked).length;
-      return `<b>Immutability probes</b>${tag(`${b}/${r.immutability.length} blocked`, b === r.immutability.length ? "ok" : "bad")}<span class="small muted">Code tries to rewrite the rule constants</span>`;
-    };
-    q("#x-aout").innerHTML = `<div class="card ga-verdict ${ok ? "ok" : "bad"}">
-        <div><div class="ga-v-big">${ok ? "✔ State unchanged" : "✘ State changed"}</div>
-          <div class="small muted">${n} attacks · ${r.committed} committed · ${src(r.source)} · <span class="x-mono">${h(r.state_hash_before)} → ${h(r.state_hash_after)}</span></div>
-          ${r.ai_error ? `<div class="small warn">${h(r.ai_error)}</div>` : ""}</div>
-        <div class="ga-filter" role="group" aria-label="Filter attacks by defence layer">
-          <button class="ga-chip ${X.atkFilter ? "" : "on"}" data-f="">All <b>${n}</b></button>
-          ${["SCHEMA", "GUARD", "HITL"].map((k) => `<button class="ga-chip ${k} ${X.atkFilter === k ? "on" : ""}" data-f="${k}">${h(LAYERS[k][0])} <b>${cnt(k)}</b></button>`).join("")}
-          <button class="ga-chip ga-export" id="ga-export">Export report</button>
-          <div class="ga-bar" aria-hidden="true">${["SCHEMA", "GUARD", "HITL"].map((k) => `<i class="${k}" style="flex:${cnt(k)}"></i>`).join("")}</div></div></div>
-      <div class="ga-inbox"><div class="card ga-list" tabindex="0" role="listbox" aria-label="Attempts">
-        ${shown.map((it, j) => `${j === 0 || atkGroup(shown[j - 1]) !== atkGroup(it) ? `<div class="ga-sep small muted">${atkGroup(it)}</div>` : ""}
-          <div class="ga-item" role="option" data-k="${it.k}">${row(it)}</div>`).join("") || '<p class="muted small">Nothing in this filter.</p>'}</div>
-        <div class="card ga-detail" id="ga-detail"></div></div>`;
-    q("#x-aout .ga-filter").onclick = (e) => {
-      if (e.target.closest("#ga-export")) return exportAttack();
-      const b = e.target.closest("[data-f]"); if (b) { X.atkFilter = b.dataset.f; drawAttack(); } };
+    const r = X.atk, n = r.attacks.length, ok = r.state_unchanged && !r.committed, play = X.atkPlay; X.atkPlay = false;
+    (X.atkTs || []).forEach(clearTimeout); X.atkTs = [];
+    const done = r.attacks.map(() => !play), cnt = (k) => r.attacks.filter((a, i) => done[i] && a.stopped_by === k).length;
+    const other = attackItems().map((it, k) => ({ ...it, k })).filter((it) => it.t !== "atk");
+    const drawLayers = () => { const v = q("#gm-layer"); if (!v) return;
+      v.innerHTML = GL.map((k) => { const list = r.attacks.map((a, i) => ({ a, i })).filter((o) => done[o.i] && o.a.stopped_by === k);
+        return `<div class="gm-lc ${GC[k]}"><h4><span>${h(LAYERS[k][0])}</span><span>${list.length}</span></h4><p>${GQ[k]}</p>${list.length ? list.map((o) =>
+          `<button class="gm-lk" data-k="${o.i}"><b>${h(o.a.name || "Attack " + (o.i + 1))}</b><span>${h(shortIds(o.a.reason))}</span></button>`).join("") : '<div class="muted small">Nothing stopped here yet.</div>'}</div>`; }).join(""); };
+    const status = () => { const d = done.filter(Boolean).length, el = q("#gm-status"); if (!el) return;
+      const fin = d === n;
+      el.className = `gm-status ${fin ? (ok ? "" : "bad") : "run"}`;
+      el.innerHTML = fin ? `<h3>${ok ? "✓ State unchanged" : "✘ State changed"}</h3><span class="small muted">${n} attacks · ${r.committed} committed · ${src(r.source)} · <span class="x-mono">${h(r.state_hash_before)} → ${h(r.state_hash_after)}</span></span>${r.ai_error ? `<span class="small warn">${h(r.ai_error)}</span>` : ""}`
+        : `<h3><span class="gm-live"></span>Attack ${Math.min(d + 1, n)} of ${n}</h3><span class="small muted">${d} stopped so far · 0 committed · <span class="x-mono">${h(r.state_hash_before)} → …</span></span>`;
+      q("#gm-prog").style.width = `${(d / Math.max(1, n)) * 100}%`;
+      GL.forEach((k) => { const e = q(`#gm-n-${k}`); if (e) e.textContent = cnt(k); }); drawLayers(); };
+    q("#x-aout").innerHTML = `<div id="gm-status"></div><div class="gm-prog"><i id="gm-prog"></i></div>
+      <div class="gm-split"><div><div class="gm-tabs"><button class="gm-tab ${X.atkTab !== "l" ? "on" : ""}" data-t="g">Live gauntlet</button>
+        <button class="gm-tab ${X.atkTab === "l" ? "on" : ""}" data-t="l">By layer</button><button class="gm-tab gm-exp" id="ga-export">Export report</button></div>
+      <div class="gm-scroll" ${X.atkTab === "l" ? "hidden" : ""}><div class="gm-gaunt ga-list" tabindex="0">
+        <div class="gm-gr gm-gh"><div class="gm-nm">ATTACK</div>${GL.map((k) => `<div class="gm-ch ${GC[k]}"><b>${h(LAYERS[k][0]).toUpperCase()}</b><span>${GQ[k]}</span><em id="gm-n-${k}">0</em></div>`).join("")}</div>
+        ${r.attacks.map((a, i) => { const hit = GL.indexOf(a.stopped_by);
+          return `<div class="gm-gr ga-item" data-k="${i}"><div class="gm-nm"><b>${h(a.name || "Attack " + (i + 1))}${a.suite === "ai" ? '<span class="gm-ai">AI</span>' : ""}</b><div>${h(a.targets)}</div></div>
+            ${GL.map((k, j) => `<div class="gm-cell ${GC[k]}" id="gm-c-${i}-${j}">${gcell(play ? "" : j < hit ? "pass" : j === hit ? "block" : "skip")}</div>`).join("")}</div>`; }).join("")}
+        ${other.map((it) => `<div class="gm-gr gm-oth ga-item" data-k="${it.k}"><div class="gm-nm">${it.t === "inj" ? "<b>Prompt-injection probe</b><div>A fake call planted in the transcripts</div>" : "<b>Immutability probes</b><div>Code tries to rewrite the rule constants</div>"}</div>
+          <div class="gm-cell gm-wide">${it.t === "inj" ? (r.injection.error ? tag("skipped", "warn") : tag(r.injection.release_passed_guards ? "check" : "held", r.injection.release_passed_guards ? "warn" : "ok"))
+            : tag(`${r.immutability.filter((p) => p.blocked).length}/${r.immutability.length} blocked`, r.immutability.every((p) => p.blocked) ? "ok" : "bad")}</div></div>`).join("")}
+      </div></div><div class="gm-layers" id="gm-layer" ${X.atkTab === "l" ? "" : "hidden"}></div></div>
+      <div class="card ga-detail gm-detail" id="ga-detail"></div></div>`;
+    q("#ga-export").onclick = exportAttack;
+    q("#x-aout .gm-tabs").onclick = (e) => { const b = e.target.closest("[data-t]"); if (!b) return; X.atkTab = b.dataset.t;
+      q("#x-aout .gm-scroll").hidden = X.atkTab === "l"; q("#gm-layer").hidden = X.atkTab !== "l";
+      q("#x-aout").querySelectorAll(".gm-tab[data-t]").forEach((t) => t.classList.toggle("on", t === b)); };
+    q("#gm-layer").onclick = (e) => { const b = e.target.closest("[data-k]"); if (b) selectAttack(b.dataset.k); };
     inboxList(q("#x-aout .ga-list"), selectAttack);
-    selectAttack(X.atkSel);
+    status(); selectAttack(X.atkSel);
+    if (!play || matchMedia("(prefers-reduced-motion: reduce)").matches) { done.fill(true); status(); return; }
+    const T = (fn, ms) => X.atkTs.push(setTimeout(fn, ms));
+    const set = (i, j, st) => { const c = q(`#gm-c-${i}-${j}`); if (c) { c.innerHTML = gcell(st); c.classList.toggle("scan", st === "scan"); } };
+    const cur = (i) => { q("#x-aout")?.querySelectorAll(".gm-gr.cur").forEach((e) => e.classList.remove("cur")); if (i != null) q(`#x-aout .gm-gr[data-k="${i}"]`)?.classList.add("cur"); };
+    r.attacks.forEach((a, i) => { const hit = Math.max(0, GL.indexOf(a.stopped_by)), t0 = 300 + i * 460;
+      for (let j = 0; j <= hit; j++) { const ts = t0 + j * 320;
+        T(() => { set(i, j, "scan"); cur(i); }, ts);
+        T(() => { if (j < hit) return set(i, j, "pass"); set(i, j, "block"); for (let k = j + 1; k < 3; k++) set(i, k, "skip");
+          done[i] = true; status(); if (String(i) === X.atkSel) selectAttack(X.atkSel); if (i === n - 1) cur(null); }, ts + 260); } });
   }
 
   function exportAttack() {
@@ -319,7 +338,8 @@ const Extras = (() => {
     if (it.t === "atk") {
       const a = it.a;
       body = `<div class="ga-d-name">${h(a.name || "Attack " + (it.i + 1))}</div>
-        <div class="ga-stop ${h(a.stopped_by)}"><span class="small muted">Stopped by</span> ${layerTag(a.stopped_by)} <span class="small muted">· ${a.suite === "ai" ? "invented by the AI" : "fixed suite"}</span>
+        <div class="gm-path">${GL.map((k, j) => { const hit = GL.indexOf(a.stopped_by); return `<div class="gm-ps ${GC[k]} ${j < hit ? "pass" : j === hit ? "hit" : ""}">${j < hit ? "✓ " : ""}${h(LAYERS[k][0]).toUpperCase()}${j === hit ? " · STOPPED" : ""}</div>`; }).join("")}</div>
+        <div class="ga-stop ${h(a.stopped_by)}"><span class="small muted">${a.suite === "ai" ? "Invented by the AI" : "Fixed suite"}</span>
           <p class="small">${h(LAYERS[a.stopped_by]?.[1] || "")}</p></div>
         <dl class="ga-dl"><dt>Rule targeted</dt><dd>${h(a.targets) || "—"}</dd><dt>What it tried</dt><dd>${h(a.tactic) || "—"}</dd>
           <dt>Why it was stopped</dt><dd>${h(shortIds(a.reason))}</dd>

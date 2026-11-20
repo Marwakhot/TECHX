@@ -74,6 +74,7 @@ const SECTIONS = [["map", "Live overview", "Operations"], ["crew", "Crew", "Oper
 async function mainView() {
   $("#view").innerHTML = `<section id="tab"></section>`;
   await { map: mapTab, crew: crewTab, pax: paxTab, mx: mxTab, log: logTab, attack: () => Extras.attackTab($("#tab")), replay: () => Extras.replayTab($("#tab")) }[S.tab]();
+  const t = $("#tab")?.querySelector("h1, h2, h3"); if (t) { t.classList.add("tab-title"); t.parentElement.classList.add("tab-head"); }
 }
 
 // live overview cards either side of the globe
@@ -303,7 +304,7 @@ async function reportView(id) {
     <div class="card"><div class="row between"><h3>Live situation report</h3>
       <span><span id="rsrc" class="muted small"></span> <button id="regen" class="ghost">↻ Regenerate</button></span></div><div id="report" class="report muted">Generating report…</div></div>
     <div class="stats">${stats.map(([t, v, s, bad]) => `<div class="stat ${bad ? "alert" : ""}"><div class="muted small">${h(t)}</div><div class="big">${h(v)}</div><div class="small">${h(s)}</div></div>`).join("")}</div>
-    <div class="card"><div class="row between"><h3>Top 3 agent suggestions <span class="muted small">· click one to see its passengers & bags</span></h3><a href="#/lab/${h(id)}"><button>Take to Scenario Lab →</button></a></div><div id="sugg" class="grid3"></div></div>
+    <div class="card"><div class="row between"><h3>Top 3 agent suggestions <span class="muted small">· click one to see its passengers & bags</span></h3><a href="#/lab/${h(id)}"><button>Open Decision hub →</button></a></div><div id="sugg" class="grid3"></div></div>
     <div class="card" id="x-pax" hidden></div>
     <div class="grid2"><div class="card"><h3>Calls on the system</h3><div class="row"><input id="spk" placeholder="Caller, e.g. Ramp control" maxlength="40">
       <button id="mic" class="ghost">Record call</button></div><textarea id="txt" rows="3" maxlength="2000" placeholder="Record (live transcription) or type the call…"></textarea>
@@ -347,44 +348,101 @@ async function loadReport(id, force) {
   } catch (e) { toast(e.message, "bad"); }
 }
 
-// ---------- scenario lab ----------
+// ---------- decision hub (was Scenario Lab) ----------
+// Three priorities map onto the backend's ranking toggles: customer satisfaction -> connections + on_time,
+// cost effectiveness -> cost, legality -> crew_rest. Checks are read from each scenario's dry-run KPIs.
+const HUB_P = [["sat", "Customer satisfaction", ["connections", "on_time"]], ["cost", "Cost effectiveness", ["cost"]], ["legal", "Legality (crew duty)", ["crew_rest"]]];
+const hubOn = (p) => HUB_P.filter(([, , ks]) => ks.some((k) => p[k])).map(([k]) => k);
+const eur = (v) => `€${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k`;
+const ICO = { pax: '<path d="M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1M9.5 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6M21 19v-1a4 4 0 0 0-3-3.8M16 4.2a3 3 0 0 1 0 5.6"/>',
+  bag: '<rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M4 12h16"/>', crew: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  mx: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L4 16.8 7.2 20l5.3-5.3a4 4 0 0 0 5.2-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>', net: '<circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.5M8.2 13.2l7.6 4.5"/>' };
+function hubChecks(s, id) {
+  if (!s.ok) return [["pax", "Passengers", false, "Refused by the guards.", s.reason, null]];
+  const k = s.kpis, c = [];
+  c.push(["pax", "Passengers", !k.at_risk && !k.vulnerable_at_risk, k.at_risk || k.vulnerable_at_risk ? `${k.at_risk} passengers still miss their connection${k.vulnerable_at_risk ? `, ${k.vulnerable_at_risk} of them vulnerable` : ""}.` : `All ${k.baseline_at_risk} at-risk passengers are protected.`,
+    `Affected: ${k.at_risk} passengers. Rebook them on the next free seats.`, ["#/tab/pax", "Passengers tab"]]);
+  const bags = (k.bags_rush || 0) + (k.bags_short_connection || 0);
+  c.push(["bag", "Baggage", !bags, bags ? `${bags} bags may not make their passenger's flight.` : "All bags travel with their passengers.", `Affected: ${bags} bags. Move those passengers to a later flight or rush-tag the bags.`, [`#/flight/${id}`, "Live report"]]);
+  const crewBad = k.crew_illegal > 0 || k.crew_min_margin < 0;
+  c.push(["crew", "Crew", !crewBad, crewBad ? `${k.crew_illegal || 1} crew member${k.crew_illegal > 1 ? "s" : ""} would exceed the duty limit.` : `Duty time is within limits (${k.crew_min_margin} min margin).`, "Affected: crew duty time. Assign standby crew.", ["#/tab/crew", "Crew tab"]]);
+  c.push(["mx", "Maintenance", !k.open_nogo, k.open_nogo ? `${k.open_nogo} NO-GO item${k.open_nogo > 1 ? "s" : ""} still unsigned.` : "Aircraft is cleared.", "Affected: open NO-GO items. A licensed engineer must sign them off.", ["#/tab/mx", "Maintenance tab"]]);
+  const net = k.network_delay_added > 30;
+  c.push(["net", "Downstream network", !net, k.network_delay_added ? `Adds ${k.network_delay_added} min of delay to onward flights.` : "No onward flights are affected.", `Affected: ${k.network_delay_added} min of onward delay. Pick a plan with a shorter hold.`, null]);
+  return c;
+}
 async function labView(id) {
-  S.flight = id;
-  $("#view").innerHTML = `<div class="row"><a href="#/flight/${h(id)}">← Live report ${h(id)}</a></div><h2>Scenario Lab · ${h(id)}</h2>
-    <div class="card"><h3>What should the recovery prioritise?</h3><div class="toggles">
-    <label class="tog locked"><input type="checkbox" checked disabled> Protect vulnerable passengers <span class="muted small">(immutable rule)</span></label>
-    ${PRIO.map(([k, l]) => `<label class="tog"><input type="checkbox" data-p="${k}" ${S.prio[k] ? "checked" : ""}> ${l}</label>`).join("")}
-    <label class="tog chaos"><input type="checkbox" id="chaos" ${S.chaos ? "checked" : ""}> Inject mid-way seat conflict</label></div>
-    <button id="regen">Ask agent for new options with these priorities</button> <span id="lsrc" class="muted small"></span>
-    ${how("Every scenario is dry-run against the real guards inside a transaction that is rolled back, then ranked by code using your toggles.")}</div>
-    <p class="muted small">Click a scenario to see its passengers & bags.</p><div id="scen" class="grid3"></div>
-    <div class="card" id="x-pax" hidden></div><div class="card" id="x-cmp"></div><div class="card" id="x-wi"></div>`;
-  $(".toggles").onchange = (e) => { if (e.target.id === "chaos") S.chaos = e.target.checked; else { S.prio[e.target.dataset.p] = e.target.checked; loadLab(id); } };
+  S.flight = id; S.hubPick = 0;
+  $("#view").innerHTML = `<div class="row"><a href="#/flight/${h(id)}">← Live report ${h(id)}</a></div>
+    <div class="hub"><h2 class="hub-title">Decision hub · ${h(id)}</h2><p class="hub-sub">Everything a scenario depends on, checked in one place.</p>
+    <div class="hub-sec"><i>1</i>PRIORITIES</div>
+    <div class="hub-row"><div class="hub-pills" id="hub-p">${HUB_P.map(([k, l]) => `<button class="hub-pill" data-p="${k}">${l}</button>`).join("")}</div>
+      <button class="hub-regen" id="regen">Regenerate scenarios</button><span id="lsrc" class="muted small"></span></div>
+    <p class="hub-note" id="hub-note"></p><div id="scen" class="hub-scen"></div><div id="hub-rest"></div></div>`;
+  const mark = () => { const on = hubOn(S.prio); document.querySelectorAll("#hub-p .hub-pill").forEach((b) => b.classList.toggle("on", on.includes(b.dataset.p))); };
+  $("#hub-p").onclick = (e) => { const b = e.target.closest("[data-p]"); if (!b) return; const ks = HUB_P.find(([k]) => k === b.dataset.p)[2], on = !ks.some((k) => S.prio[k]);
+    ks.forEach((k) => (S.prio[k] = on)); mark(); $("#hub-note").innerHTML = '<b>Priorities changed.</b> Regenerate to build new scenarios for them.'; };
   $("#regen").onclick = () => loadLab(id, true);
-  loadLab(id);
+  mark(); loadLab(id);
+}
+async function loadLab(id, regenerate = false) {
+  $("#scen").innerHTML = `<p class="muted">${regenerate ? "Asking the agent for new scenarios, then dry-running them…" : "Dry-running the recommended scenarios…"}</p>`; $("#hub-rest").innerHTML = "";
+  try {
+    const c = await api("/api/compare", { flight_id: id, priorities: S.prio, regenerate, narrate: false }), rows = c.rows.slice(0, 3), used = hubOn(c.priorities);
+    $("#lsrc").textContent = `Source: ${c.scenario_source}`;
+    $("#hub-note").innerHTML = `Scenarios built to protect: ${used.length ? used.map((k) => HUB_P.find(([p]) => p === k)[1].toLowerCase()).join(", ") : "the agent's default balance"}`;
+    const draw = () => {
+      const pick = S.hubPick, s = rows[pick], L = "ABC";
+      $("#scen").innerHTML = rows.map((r, i) => { const ch = hubChecks(r, id), bad = ch.filter((x) => !x[2]).length;
+        return `<button class="hub-card ${i === pick ? "on" : ""}" data-i="${i}"><div class="hub-prio">${used.map((k) => `<span>${h(HUB_P.find(([p]) => p === k)[1])}</span>`).join("")}</div>
+          <div class="hub-cl">SCENARIO ${L[i]} ${i === 0 && r.ok ? '<em>AI recommended</em>' : ""}</div><b>${h(r.title)}</b><p>${h(r.why)}</p>
+          <div class="hub-bars">${(r.ok ? ch : [0, 0, 0, 0, 0].map(() => [0, 0, false])).map((x) => `<i class="${x[2] ? "g" : "r"}"></i>`).join("")}<span class="${bad ? "r" : "g"}">${!r.ok ? "Blocked" : bad ? `${bad} issue${bad > 1 ? "s" : ""}` : "All 5 checks ready"}</span></div></button>`; }).join("");
+      if (!s) return;
+      const ch = hubChecks(s, id), bad = ch.filter((x) => !x[2]), k = s.kpis || {}, max = Math.max(...rows.map((r) => r.kpis?.total_cost_eur || 0), 1);
+      const low = Math.min(...rows.filter((r) => r.ok).map((r) => r.kpis.total_cost_eur));
+      const parts = s.ok ? [["Rebooking & care", k.pax_cost_eur || 0, "#e8c79a"], ["Delays", 100 * (k.network_delay_added || 0), "#e8b2a4"]].filter((p) => p[1] > 0) : [];
+      $("#hub-rest").innerHTML = `<div class="hub-sec"><i>2</i>CHECKS FOR: ${h(s.title).toUpperCase()}</div>
+        <div class="hub-checks">${ch.map(([ic, l, ok, txt, fix, link]) => `<div class="hub-ck ${ok ? "g" : "r"}"><div class="hub-ckh"><span class="hub-ico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICO[ic]}</svg></span>${h(l).toUpperCase()}</div>
+          <div class="hub-st">${ok ? "✓ Ready" : "⚑ Issue"}</div><p>${h(txt)}</p>${ok ? "" : `<div class="hub-fix"><b>Fix this:</b> ${h(fix)}</div>${link ? `<a class="hub-go" href="${link[0]}">Go to ${h(link[1])} →</a>` : ""}`}</div>`).join("")}</div>
+        <div class="hub-sec"><i>3</i>COST IMPACT · ESTIMATES</div>
+        <div class="hub-cost"><div class="hub-box"><div class="hub-bh">TOTAL COST BY SCENARIO</div>${rows.map((r, i) => `<div class="hub-cr ${i === pick ? "on" : ""}"><span>Scenario ${L[i]}${r.ok && r.kpis.total_cost_eur === low ? "<em>Lowest</em>" : ""}</span>
+            <div class="hub-tr"><i style="width:${r.ok ? (r.kpis.total_cost_eur / max) * 100 : 0}%"></i></div><b>${r.ok ? eur(r.kpis.total_cost_eur) : "—"}</b></div>`).join("")}</div>
+          <div class="hub-box"><div class="hub-bh">WHERE THE COST COMES FROM: SCENARIO ${L[pick]}</div>
+            <div class="hub-split">${parts.map(([l, v, c]) => `<div style="flex:${v};background:${c}"><small>${l}</small><b>${eur(v)}</b></div>`).join("") || '<p class="muted small">No cost estimate.</p>'}</div>
+            <div class="hub-tot"><span>Estimated total</span><b>${s.ok ? eur(k.total_cost_eur) : "—"}</b></div></div></div>
+        <div class="hub-sec"><i>4</i>REVIEW AND APPROVE</div><div id="hub-ap"></div>`;
+      hubApprove(id, s, bad);
+    };
+    $("#scen").onclick = (e) => { const b = e.target.closest("[data-i]"); if (b) { S.hubPick = +b.dataset.i; draw(); } };
+    S.hubPick = 0; draw();
+  } catch (e) { toast(e.message, "bad"); $("#scen").innerHTML = `<p class="bad">${h(e.message)}</p>`; }
 }
 
-async function loadLab(id, regenerate = false) {
-  $("#scen").innerHTML = `<p class="muted">${regenerate ? "Asking the agent, then simulating…" : "Simulating scenarios (dry run, rolled back)…"}</p>`;
-  try {
-    const c = await api("/api/compare", { flight_id: id, priorities: S.prio, regenerate, narrate: false });
-    const r = { source: c.scenario_source, scenarios: c.rows };
-    $("#lsrc").textContent = `Source: ${r.source}`;
-    $("#scen").innerHTML = r.scenarios.map((s, i) => `<div class="card scen x-pick ${i === 0 && s.ok ? "best" : ""}" data-opt="${i}"><div class="row between"><b>#${i + 1} ${h(s.title)}</b>
-      ${tag(s.ok ? "score " + s.score : "blocked", s.ok ? "" : "bad")}</div><p class="small">${h(s.why)}</p>${s.revised_from ? `<div class="small warn" title="${h(s.revised_from)}">↻ AI revised this after the guards refused: ${h(s.revised_from)}</div>` : ""}<div class="small">${actionsText(s.actions)}</div>
-      ${s.ok ? `<div class="kpis">${[["Still at risk", s.kpis.at_risk], ["Vulnerable at risk", s.kpis.vulnerable_at_risk], ["Protected", `${s.kpis.protected}/${s.kpis.baseline_at_risk}`],
-        ["Network delay added", `${s.kpis.network_delay_added} min`], ["Total cost", `€${s.kpis.total_cost_eur.toLocaleString()}`], ["Crew margin", `${s.kpis.crew_min_margin} min`],
-        ["NO-GO open", s.kpis.open_nogo], ["Turn gap", `${sign(s.kpis.turn_gap)} min`]].map(([a, b]) => `<div><span class="muted small">${a}</span><b>${h(b)}</b></div>`).join("")}</div>
-        <p class="ok small">Passes all guards (dry run)</p>` : `<p class="bad small">${h(s.reason)}</p>`}
-      <button data-i="${i}" ${s.ok ? "" : "disabled"}>Choose this scenario</button></div>`).join("");
-    $("#scen").onclick = (e) => { const s = r.scenarios[e.target.dataset.i];
-      if (s) return decide(id, s.title, s.actions, (res) => res?.status === "APPROVED" && (location.hash = `#/flight/${id}`), S.chaos);
-      const card = e.target.closest("[data-opt]"); if (!card || !r.scenarios[card.dataset.opt].actions.length) return;
-      document.querySelectorAll("#scen .x-sel").forEach((x) => x.classList.remove("x-sel")); card.classList.add("x-sel");
-      Extras.paxPanel($("#x-pax"), id, r.scenarios[card.dataset.opt]); };
-    Extras.comparison($("#x-cmp"), id, c);
-    Extras.whatif($("#x-wi"), id, r.scenarios).catch((e) => toast(e.message, "bad"));
-  } catch (e) { toast(e.message, "bad"); }
+// Approval: what gets triggered, split by area. Approve unlocks only after every area tab has been opened (and all checks pass).
+const HUB_AREAS = [["pax", "Passengers", ["REBOOK", "REBOOK_AT_RISK", "REBOOK_TIERS", "DELAY", "GATE_CHANGE", "DEPARTURE_RELEASE"]], ["crew", "Crew", ["CREW_SWAP", "CREW_AUTOSWAP"]], ["mx", "Maintenance", ["ASSIGN_ENGINEER"]]];
+function hubApprove(id, s, bad) {
+  const box = $("#hub-ap"), k = s.kpis || {}, acts = s.actions || [], rev = new Set(), of = (ks) => acts.filter((a) => ks.includes(a.kind));
+  let tab = null;
+  const summary = {
+    pax: () => { const rb = of(["REBOOK", "REBOOK_AT_RISK", "REBOOK_TIERS"]), n = rb.filter((a) => a.kind === "REBOOK").length, batch = rb.some((a) => a.kind !== "REBOOK");
+      return [[batch ? k.protected ?? "—" : n, "passengers rebooked"], [k.vulnerable_at_risk ?? "—", "vulnerable still at risk"], [k.at_risk ?? "—", "still miss their connection"], [`${k.network_delay_added ?? 0} min`, "onward delay added"]]; },
+    crew: () => { const sw = of(["CREW_SWAP"]).length, auto = of(["CREW_AUTOSWAP"]).length;
+      return [[auto ? "All illegal" : sw, auto ? "crew swapped to legal standby" : "crew swaps"], [k.crew_illegal ?? 0, "crew over the duty limit after"], [`${k.crew_min_margin ?? "—"} min`, "smallest duty margin"]]; },
+    mx: () => [[of(["ASSIGN_ENGINEER"]).length, "engineer assignments"], [k.open_nogo ?? 0, "NO-GO items still open after"]] };
+  const draw = () => {
+    const all = rev.size === HUB_AREAS.length, ready = all && !bad.length, area = HUB_AREAS.find(([a]) => a === tab);
+    box.innerHTML = `<div class="hub-rv"><div class="hub-rvt">${HUB_AREAS.map(([a, l, ks]) => `<button class="hub-rvb ${tab === a ? "on" : ""} ${rev.has(a) ? "seen" : ""}" data-a="${a}">
+        <span>${rev.has(a) ? "✓" : "○"}</span>${l}<small>${of(ks).length} action${of(ks).length === 1 ? "" : "s"}</small></button>`).join("")}</div>
+      <div class="hub-rvp">${area ? `<div class="hub-rvs">${summary[tab]().map(([v, l]) => `<div><b>${h(String(v))}</b><span>${h(l)}</span></div>`).join("")}</div>
+        <div class="hub-bh">ACTIONS THAT WILL RUN ON APPROVAL</div><div class="hub-rva">${of(area[2]).length ? actionsText(of(area[2])) : '<span class="muted">No actions in this area. Nothing changes here.</span>'}</div>`
+        : '<p class="muted">Open each area to see exactly what you are authorising. Approve unlocks once all three have been reviewed.</p>'}</div></div>
+      <div class="hub-ap ${bad.length ? "r" : ready ? "g" : ""}"><div><h3>${bad.length ? `${bad.length} issue${bad.length > 1 ? "s" : ""} to fix first` : ready ? "Reviewed and ready" : `Review ${HUB_AREAS.length - rev.size} more area${HUB_AREAS.length - rev.size === 1 ? "" : "s"}`}</h3>
+        <p>${bad.length ? h(bad.map((x) => x[3]).join(" ")) : `${rev.size} of ${HUB_AREAS.length} reviewed: ${HUB_AREAS.map(([a, l]) => `${rev.has(a) ? "✓" : "○"} ${l}`).join(" · ")}`}</p></div>
+        <div class="hub-apr"><button id="hub-go" ${ready ? "" : "disabled"}>Approve operational plan</button><small>${ready ? `Runs ${acts.length} action${acts.length === 1 ? "" : "s"} as one step. Nothing is partly applied.` : "Locked until every area is reviewed and every check is ready."}</small></div></div>`;
+    box.querySelector(".hub-rvt").onclick = (e) => { const b = e.target.closest("[data-a]"); if (!b) return; tab = b.dataset.a; rev.add(tab); draw(); };
+    $("#hub-go").onclick = () => ready && decide(id, s.title, s.actions, (res) => res?.status === "APPROVED" && (location.hash = `#/flight/${id}`), false);
+  };
+  draw();
 }
 
 // ---------- shell ----------
