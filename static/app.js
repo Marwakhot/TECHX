@@ -213,17 +213,68 @@ async function pickerTab(render) {
   render(d, $("#sub"));
 }
 
+// Crew: duty-time bars against the legal ceiling, grouped by role, with the nearest guard-approved standby suggested per member.
+// Display only: swaps still go through decide() (controller name + PIN), and the dropdowns list only guard-approved standby.
+const CREW_F = { f: "all" };
 const crewTab = () => pickerTab((d, el) => {
-  el.innerHTML = `<h3>Crew for ${h(d.outbound.id)} → ${h(d.outbound.dest)} (${h(d.outbound.aircraft_type)}, dep T${sign(d.outbound.eff)})
-    <span class="muted small">· most urgent first · legal ceiling ${d.limits.MAX_FDP_MIN} min · dropdowns list only guard-approved standby</span></h3>
-    <table><thead><tr><th>ID</th><th>Name</th><th>Role</th><th>Rating</th><th>Duty used</th><th>Projected FDP</th><th>Margin</th><th>Replacement / standby</th></tr></thead>
-    <tbody>${d.crew.map((c) => `<tr><td>${h(c.id)}</td><td>${h(c.name)}</td><td>${h(c.role)}</td><td>${h(c.type_rating)}</td><td>${c.duty_used} min</td>
-    <td>${c.projected_fdp} min</td><td class="${c.margin < 0 ? "bad" : c.margin < 60 ? "warn" : "ok"}">${c.margin} min ${c.margin < 0 ? "illegal" : ""}</td>
-    <td><select data-crew="${h(c.id)}"><option value="">${c.options.length ? "— choose standby —" : "no legal standby"}</option>${c.options.map((o) =>
-      `<option value="${h(o.id)}">${h(o.id)} · ${h(o.name)} · ${h(o.location)} (${o.walk_min} min)</option>`).join("")}</select></td></tr>`).join("")}</tbody></table>`;
-  el.onchange = (e) => { const s = e.target;
-    if (s.dataset.crew && s.value) decide(d.flight.id, `Crew swap ${s.dataset.crew} → ${s.value}`, [{ kind: "CREW_SWAP", crew_id: s.dataset.crew, standby_id: s.value }],
-      (r) => (r?.status === "APPROVED" ? mainView() : (s.value = ""))); };
+  const MAX = d.limits.MAX_FDP_MIN, o = d.outbound, crew = d.crew;
+  const st = (c) => (c.margin < 0 ? "over" : c.margin < 60 ? "tight" : "ok");
+  // standby already used in a pending swap (so the same person is not proposed twice)
+  const busy = new Set();
+  for (const c of d.decisions || []) if (c.status === "PENDING") {
+    try { JSON.parse(c.actions || "[]").forEach((a) => a.kind === "CREW_SWAP" && busy.add(a.standby_id)); } catch { /* skip */ }
+  }
+  const over = crew.filter((c) => c.margin < 0), tight = crew.filter((c) => st(c) === "tight");
+  const worst = crew.length ? Math.min(...crew.map((c) => c.margin)) : 0;
+  const pool = new Map();
+  crew.forEach((c) => c.options.forEach((s) => pool.set(s.id, { ...s, role: c.role })));
+  const top = Math.max(MAX, ...crew.map((c) => c.projected_fdp)) * 1.04; // bar scale: a little past the ceiling
+  const pc = (m) => `${Math.max(0, Math.min(100, (100 * m) / top))}%`;
+  const bar = (c) => `<div class="cw-bar" role="img" aria-label="${h(c.name)}: ${c.duty_used} min used, ${c.projected_fdp} min projected, limit ${MAX} min">
+      <i class="used" style="width:${pc(Math.min(c.duty_used, MAX))}"></i><i class="proj" style="left:${pc(Math.min(c.duty_used, MAX))};width:${pc(Math.max(0, Math.min(c.projected_fdp, MAX) - Math.min(c.duty_used, MAX)))}"></i>
+      ${c.projected_fdp > MAX ? `<i class="over" style="left:${pc(MAX)};width:${pc(c.projected_fdp - MAX)}"></i>` : ""}<b class="lim" style="left:${pc(MAX)}"></b></div>`;
+  // each standby is suggested to at most one person, most over-limit first (the dropdown still lists every legal option)
+  const sug = new Map(), given = new Set(busy);
+  [...crew].sort((x, y) => x.margin - y.margin).forEach((c) => { const s = c.options.find((o) => !given.has(o.id)); if (s) { sug.set(c.id, s); given.add(s.id); } });
+  const best = (c) => sug.get(c.id);
+  const row = (c) => {
+    const b = best(c), k = st(c);
+    return `<div class="cw-row ${k}">
+      <div class="cw-who"><span class="cw-av">${h(c.name.split(/\s+/).map((w) => w[0]).join("").slice(0, 2))}</span>
+        <div><b>${h(c.name)}</b><small>${h(c.id)} · ${h(c.role)} · ${h(c.type_rating)}</small></div></div>
+      <div class="cw-time">${bar(c)}<small>${c.duty_used} min used · ${c.projected_fdp} min projected at departure</small></div>
+      <div class="cw-m ${k}"><b>${c.margin > 0 ? "+" : ""}${c.margin} min</b><small>${{ over: "over limit", tight: "tight", ok: "legal" }[k]}</small></div>
+      <div class="cw-act">${k === "over" ? (b ? `<div class="cw-sug"><small>Suggested standby</small><b>${h(b.id)} · ${h(b.name)}</b><small>${h(b.location)} · ${b.walk_min} min walk</small>
+          <button data-swap="${h(c.id)}|${h(b.id)}">Propose swap</button></div>` : `<p class="small bad">${c.options.length ? "Matching standby already suggested for a more urgent crew member" : "No legal standby available"}</p>`) : ""}
+        <select data-crew="${h(c.id)}" aria-label="Choose standby for ${h(c.name)}"><option value="">${c.options.length ? (k === "over" ? "or choose another…" : "Swap with standby…") : "no legal standby"}</option>${c.options.map((s) =>
+          `<option value="${h(s.id)}" ${busy.has(s.id) ? "disabled" : ""}>${h(s.id)} · ${h(s.name)} · ${h(s.location)} (${s.walk_min} min)${busy.has(s.id) ? " · already proposed" : ""}</option>`).join("")}</select></div></div>`;
+  };
+  const vis = crew.filter((c) => CREW_F.f === "all" || st(c) === CREW_F.f);
+  const deck = vis.filter((c) => /^(CPT|FO|SO|CAP|CAPT)/i.test(c.role)), cabin = vis.filter((c) => !deck.includes(c));
+  const group = (t, list) => list.length ? `<section class="cw-group"><div class="cw-gh"><h3>${t}</h3><span class="small muted">${list.filter((c) => c.margin < 0).length} of ${list.length} over limit</span></div>${list.map(row).join("")}</section>` : "";
+  el.className = "cw";
+  el.innerHTML = `
+    <section class="px-kpis" aria-label="Crew summary">
+      <div class="k main"><span>Outbound</span><b>${h(o.id)} <em>→ ${h(o.dest)}</em></b><small>${h(o.aircraft_type)} · departs T${sign(o.eff)}</small></div>
+      <div class="k"><span>Over the legal limit</span><b class="${over.length ? "bad" : ""}">${over.length}</b><small>of ${crew.length} crew</small></div>
+      <div class="k"><span>Tightest margin</span><b class="${worst < 0 ? "bad" : ""}">${worst > 0 ? "+" : ""}${worst} min</b><small>legal ceiling ${MAX} min</small></div>
+      <div class="k"><span>Standby available</span><b>${[...pool.keys()].filter((x) => !busy.has(x)).length}</b><small>${busy.size ? `${busy.size} already proposed` : "guard-approved only"}</small></div>
+    </section>
+    ${over.length && over.length === crew.length ? '<div class="px-alert" role="alert">⚠ Every crew member is over the legal limit: a full standby crew is needed for this departure.</div>' : ""}
+    <div class="cw-top"><div class="cw-filter" role="group" aria-label="Filter crew">${[["all", "All", crew.length], ["over", "Over limit", over.length], ["tight", "Tight (< 60 min)", tight.length],
+      ["ok", "Legal", crew.length - over.length - tight.length]].map(([k, l, n]) => `<button class="${CREW_F.f === k ? "on" : ""}" data-cf="${k}" aria-pressed="${CREW_F.f === k}">${l} <span>${n}</span></button>`).join("")}</div>
+      <div class="cw-key small muted"><i class="used"></i>duty used <i class="proj"></i>to departure <i class="over"></i>over limit <b class="lim"></b>legal ceiling</div></div>
+    <div class="cw-layout"><div>${group("Flight deck", deck)}${group("Cabin crew", cabin)}${vis.length ? "" : '<p class="muted">No crew in this filter.</p>'}</div>
+      <aside class="cw-pool"><h3>Standby pool</h3>${pool.size ? `<ul>${[...pool.values()].sort((a, b) => a.walk_min - b.walk_min).map((s) =>
+        `<li class="${busy.has(s.id) ? "used" : ""}"><b>${h(s.id)}</b> ${h(s.name)}<small>${h(s.role)} · ${h(s.location)} · ${s.walk_min} min walk${busy.has(s.id) ? " · already proposed" : ""}</small></li>`).join("")}</ul>`
+        : '<p class="small muted">No legal standby for this crew.</p>'}<p class="small muted">Only standby that pass the guards are listed. Every swap needs controller approval (PIN).</p></aside></div>`;
+  const swap = (cid, sid, reset) => decide(d.flight.id, `Crew swap ${cid} → ${sid}`, [{ kind: "CREW_SWAP", crew_id: cid, standby_id: sid }],
+    (r) => (r?.status === "APPROVED" || r?.status === "PENDING" ? mainView() : reset?.()));
+  el.onclick = (e) => {
+    const f = e.target.closest("[data-cf]"); if (f) { CREW_F.f = f.dataset.cf; return mainView(); }
+    const b = e.target.closest("[data-swap]"); if (b) { const [cid, sid] = b.dataset.swap.split("|"); swap(cid, sid); }
+  };
+  el.onchange = (e) => { const s = e.target; if (s.dataset.crew && s.value) swap(s.dataset.crew, s.value, () => (s.value = "")); };
 });
 
 // Connecting Passengers: Passenger Impact Agent (analysis + recommendation hand-off only; it never books anything)

@@ -373,13 +373,7 @@ const Extras = (() => {
 
   function drawReplay() {
     const r = X.rp, changes = r.steps.filter((s, i) => i && s.state_change).length, actors = [...new Set(r.steps.slice(1).map((s) => s.actor))].sort();
-    q("#x-rout").innerHTML = `<div class="card ga-verdict ${r.verified ? "ok" : "bad"}"><div>
-        <div class="ga-v-big">${r.verified ? "✔ Verified" : "✘ Mismatch"}</div>
-        <div class="small muted">${r.events} events · ${changes} changed state · ${r.mismatches} mismatches</div></div>
-        <div class="ar-right"><div class="ar-hashes small"><span class="muted">Replayed</span><b class="x-mono">${h(r.replayed_hash)}</b>
-          <span class="muted">Live</span><b class="x-mono ${r.replayed_hash === r.live_hash ? "ok" : "bad"}">${h(r.live_hash)}</b></div>
-          <button class="ghost" id="ar-export">Export evidence</button></div>
-        ${r.verified ? "" : '<p class="bad small ar-warn">The live database differs from what the audit log explains: something changed state outside the audited write path.</p>'}</div>
+    q("#x-rout").innerHTML = `<div id="ar-stage"></div>
       <div class="card ar-wrap" tabindex="0" aria-label="Audit timeline. Use the left and right arrow keys to move between events.">
         <div class="ar-ctl"><div class="row"><button class="ghost" data-go="-1" aria-label="Previous event">◀</button><button id="ar-play">▶ Play</button>
           <button class="ghost" data-go="1" aria-label="Next event">▶</button></div>
@@ -388,8 +382,17 @@ const Extras = (() => {
           <label class="small"><input type="checkbox" id="ar-only" ${X.rq.only ? "checked" : ""}> State changes only</label>
           <span class="small muted" id="ar-count"></span>
           <span class="small muted ar-legend"><i class="chg"></i>changed state <i class="log"></i>logged only <i class="bad"></i>mismatch</span></div>
-        <div class="ar-scroll"><div class="ar-track ${r.steps.length > 40 ? "compact" : ""}">${r.steps.map((s, i) => `<button class="ar-node ${i === 0 ? "seed" : stepBad(s) ? "bad" : s.state_change ? "chg" : "log"}"
-          data-i="${i}" title="#${s.seq} ${h(s.action)} · ${h(s.actor)}" aria-label="Event ${s.seq}: ${h(s.action)}"><span>${i === 0 ? "seed" : s.seq}</span></button>`).join("")}</div></div></div>
+        <div class="ar-scroll"><div class="ar-track rs-cards">${r.steps.map((s, i) => `<button class="ar-node rs-card ${i && stepBad(s) ? "bad" : ""}" style="--c:${rcol(i, s)}"
+          data-i="${i}" aria-label="Stage ${i}: ${h(i ? s.action : "seed")}"><span class="rs-cl">STAGE ${i}</span><b>${h(i ? s.action : "SEED")}</b>
+          <small>${h(i ? (RSUM[s.action] || (s.state_change ? "Changed state" : "Logged only")) : "Starting data and first hash")}</small>
+          <em>${i === 0 ? "○ step 0" : stepBad(s) ? "● mismatch" : s.state_change ? "● changed state" : "○ logged only"}</em></button>`).join("")}</div></div></div>
+<div class="card ga-verdict ${r.verified ? "ok" : "bad"}"><div>
+        <div class="ga-v-big">${r.verified ? "✔ Verified" : "✘ Mismatch"}</div>
+        <div class="small muted">${r.events} events · ${changes} changed state · ${r.mismatches} mismatches</div></div>
+        <div class="ar-right"><div class="ar-hashes small"><span class="muted">Replayed</span><b class="x-mono">${h(r.replayed_hash)}</b>
+          <span class="muted">Live</span><b class="x-mono ${r.replayed_hash === r.live_hash ? "ok" : "bad"}">${h(r.live_hash)}</b></div>
+          <button class="ghost" id="ar-export">Export evidence</button></div>
+        ${r.verified ? "" : '<p class="bad small ar-warn">The live database differs from what the audit log explains: something changed state outside the audited write path.</p>'}</div>
       <div class="grid2 ar-panes"><div class="card" id="ar-diff"></div><div class="card" id="ar-ev"></div></div>`;
     const refilter = () => { markNodes(); const nav = navSteps(); if (!nav.includes(X.step)) selectStep(nav[nav.length - 1] ?? 0); };
     q("#ar-only").onchange = (e) => { X.rq.only = e.target.checked; refilter(); };
@@ -419,19 +422,52 @@ const Extras = (() => {
   function startPlay() {
     const nav = navSteps(); if (X.step >= nav[nav.length - 1]) selectStep(nav[0]); // at the end: start over
     q("#ar-play").textContent = "❚❚ Pause";
-    X.play = setInterval(() => { if (!q("#ar-play") || !goStep(1)) stopPlay(); }, 1100);
+    X.play = setInterval(() => { if (!q("#ar-play") || !goStep(1)) stopPlay(); }, 3000); // spec: auto-advance about every 3 s so each scene can play
   }
   function stopPlay() { clearInterval(X.play); X.play = null; const b = q("#ar-play"); if (b) b.textContent = "▶ Play"; }
 
+  // Flight-path stage: each event is a stage; the plane orb flies to it, the old scene slides left, the new one slides in
+  // in its own colour, and "what happened" lines appear below. Stage cards fill as the replay passes them. Display only.
+  const RCOL = ["#3F5D7D", "#B5602B", "#A83F6A", "#6B4FA0", "#187070", "#8F6411"];
+  const rcol = (i, s) => (i && stepBad(s) ? "#C03A2B" : RCOL[i % RCOL.length]);
+  const RSUM = { REBOOK_COMMIT: "Passengers rebooked", CHANGE_APPROVED: "Plan approved with name and PIN", MAINTENANCE_SIGNED: "NO-GO item signed off",
+    TASK_DONE: "Ground task closed", REDTEAM_RUN: "Guard attacks run, state unchanged", ETA_UPDATED: "Delay updated" };
+  const rsum = (i, s) => (i === 0 ? "The starting dataset, before any logged event is replayed." : stepBad(s) ? "Hash mismatch: state differs from the log"
+    : RSUM[s.action] || (s.state_change ? "State changed" : "Logged only, no operational state changed"));
+  function drawStage(i, s, prev, changed, better, fmt) {
+    const box = q("#ar-stage"); if (!box) return;
+    if (!box.querySelector(".rs")) box.innerHTML = `<div class="rs"><div class="rs-glow"></div><div class="rs-path"></div>
+      <div class="rs-orb" aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg></div></div>`;
+    const rs = box.querySelector(".rs"), c = rcol(i, s), nx = X.rp.steps[i + 1], rows = (prev ? changed : []).slice(0, 4);
+    const lines = i === 0 ? RKP.slice(0, 3).map(([k, l]) => `<span class="rs-chip"><b>${fmt(s.kpis[k])}</b> ${l.toLowerCase()}</span>`)
+      : rows.map(([k, l]) => `<span class="rs-chip">${l} <s>${fmt(prev.kpis[k])}</s> → <b class="${better(k)}" data-from="${h(prev.kpis[k])}" data-to="${h(s.kpis[k])}">${fmt(s.kpis[k])}</b></span>`);
+    lines.push(`<span class="rs-chip ${s.match === false ? "bad" : s.match ? "ok" : ""}">${s.match === true ? "✓ hash matches record" : s.match === false ? "✘ hash mismatch" : i ? "hash carried forward" : "seed hash"} <code>${h(String(s.hash).slice(0, 12))}</code></span>`);
+    rs.querySelectorAll(".rs-sc").forEach((o) => { o.classList.add("out"); setTimeout(() => o.remove(), 900); });
+    const sc = document.createElement("div"); sc.className = "rs-sc"; sc.style.setProperty("--c", c);
+    sc.innerHTML = `<div class="rs-lbl">STAGE ${i}</div><div class="rs-act">${i === 0 ? "SEED" : h(s.action)}</div>
+      <div class="rs-desc">${h(rsum(i, s))}${i ? ` <span class="muted">· ${h(s.actor)} · ${h(s.ts)}</span>` : ""}</div><div class="rs-chips">${lines.join("")}</div>
+      ${nx ? `<div class="rs-next" style="--n:${rcol(i + 1, nx)}"><i></i><span>STAGE ${i + 1}</span><small>${h(nx.action)}</small></div>` : '<div class="rs-next end"><span>PARKED</span></div>'}`;
+    rs.appendChild(sc); rs.style.setProperty("--c", c);
+    const orb = rs.querySelector(".rs-orb"); orb.classList.remove("fly"); void orb.offsetWidth; orb.classList.add("fly");
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    sc.querySelectorAll("[data-to]").forEach((el) => {
+      const a = +el.dataset.from, b = +el.dataset.to; if (!isFinite(a) || !isFinite(b) || el.dataset.from === "" || el.dataset.to === "") return;
+      const t0 = performance.now() + 700;
+      const tick = (t) => { const p = Math.min(1, Math.max(0, (t - t0) / 500)); el.textContent = Math.round(a + (b - a) * p); if (p < 1 && el.isConnected) requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+    });
+  }
+
   function selectStep(i) {
     const r = X.rp, s = r.steps[i], prev = r.steps[i - 1]; X.step = i;
-    document.querySelectorAll("#x-rout .ar-node").forEach((n) => n.classList.toggle("on", +n.dataset.i === i));
+    document.querySelectorAll("#x-rout .ar-node").forEach((n) => { n.classList.toggle("on", +n.dataset.i === i); n.classList.toggle("done", +n.dataset.i <= i); });
     const node = q("#x-rout .ar-node.on"), sc = q("#x-rout .ar-scroll"); // scroll the timeline only, never the page
     if (node && sc && (node.offsetLeft < sc.scrollLeft || node.offsetLeft > sc.scrollLeft + sc.clientWidth - 30)) sc.scrollLeft = Math.max(0, node.offsetLeft - sc.clientWidth / 2);
     const fmt = (v) => (v == null || v === "" ? "—" : h(v));
     const changed = prev ? RKP.filter(([k]) => prev.kpis[k] !== s.kpis[k]) : [];
     const better = (k) => typeof s.kpis[k] === "number" && typeof prev.kpis[k] === "number" ? (s.kpis[k] < prev.kpis[k] ? "ok" : "bad") : "";
     const recs = s.records || [];
+    drawStage(i, s, prev, changed, better, fmt);
     q("#ar-diff").innerHTML = !prev
       ? `<h3>Starting point</h3><p class="small muted">The seed dataset, before any logged event.</p>
         <table><tbody>${RKP.map(([k, l]) => `<tr><td>${l}</td><td class="num"><b>${fmt(s.kpis[k])}</b></td></tr>`).join("")}</tbody></table>`
