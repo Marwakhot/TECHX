@@ -33,7 +33,7 @@ def fake_llm(eta_updates=None):
 
 def notifications():
     with S.closing(S.connect()) as con:
-        return S.rows(con, "SELECT * FROM notifications WHERE recipient LIKE 'AeroTurn agent%'")
+        return S.rows(con, "SELECT * FROM notifications WHERE recipient LIKE 'Aviant agent%'")
 
 
 def test_first_tick_plans_every_disrupted_flight_without_alerts(monkeypatch):

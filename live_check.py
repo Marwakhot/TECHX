@@ -3,7 +3,7 @@ Runs on a throwaway database, so the demo database is untouched.   Usage: python
 import os
 import tempfile
 
-os.environ["AEROTURN_DB"] = os.path.join(tempfile.mkdtemp(), "live.sqlite")
+os.environ["AVIANT_DB"] = os.path.join(tempfile.mkdtemp(), "live.sqlite")
 import agent  # noqa: E402
 import ledger  # noqa: E402
 import redteam  # noqa: E402

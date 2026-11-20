@@ -1,4 +1,4 @@
-"""AeroTurn OCC web server (standard library only). Run: python server.py  ->  http://127.0.0.1:8000"""
+"""Aviant OCC web server (standard library only). Run: python server.py  ->  http://127.0.0.1:8000"""
 import json
 import os
 import re
@@ -22,7 +22,7 @@ from guards import GuardViolation
 
 STATIC = Path(__file__).with_name("static")
 # Extra front-end origins allowed to POST (e.g. a Vercel front end proxying /api to Railway): comma-separated, e.g.
-# ALLOWED_ORIGINS=https://aeroturn.vercel.app
+# ALLOWED_ORIGINS=https://aviant.vercel.app
 ALLOWED_HOSTS = {urlsplit(o.strip()).netloc or o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()}
 FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
          "/flight.js": ("flight.js", "text/javascript"), "/flight.css": ("flight.css", "text/css"),
@@ -180,7 +180,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     # Localhost only on your machine; on Railway (or with HOST=0.0.0.0) listen on all interfaces so the platform can route to it.
     host = os.getenv("HOST") or ("0.0.0.0" if os.getenv("RAILWAY_ENVIRONMENT") else "127.0.0.1")
-    print(f"AeroTurn OCC on http://{host}:{port}", flush=True)
+    print(f"Aviant OCC on http://{host}:{port}", flush=True)
     if monitor.start_background():
         print(f"Autonomous agent watching all flights every {monitor.INTERVAL_S} s", flush=True)
     ThreadingHTTPServer((host, port), Handler).serve_forever()

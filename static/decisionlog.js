@@ -7,7 +7,7 @@ const DecisionLog = (() => {
   const X = { root: null, selCall: null, selDec: null, f: { status: "", call: "", type: "" }, calls: [], decs: [], extracting: new Set(),
     play: null, rec: null, drawer: null, newCall: null };
   let me = "";
-  try { me = localStorage.getItem("aeroturn.me") || ""; } catch { /* private mode */ }
+  try { me = localStorage.getItem("aviant.me") || ""; } catch { /* private mode */ }
   const ICON = { BLOCKED: "⛔", REJECTED: "✕", ROLLED_BACK: "↺", AWAITING_APPROVAL: "⏳", READY: "➜", GUARD_CHECKED: "🛡", EXECUTED: "✔", RECORDED: "•", PROPOSED: "○" };
   const st = (code, label) => `<span class="dl-st ${h(code)}">${ICON[code] || ""} ${h(label || code)}</span>`;
   const ts = (call, line, at) => `<button class="dl-ts" data-tx="${call}" data-line="${line}" title="Open the transcript at this line">${h(String(at || "").slice(0, 5))}</button>`;
@@ -37,7 +37,7 @@ const DecisionLog = (() => {
         <div class="dl-filters" id="dl-filters"></div><div class="dl-log" id="dl-log"><div class="dl-skel"></div></div></div>
       <div class="card" id="dl-queue"></div>
       <div class="card"><details><summary><b>System decision history & notifications</b> <span class="small muted">· every change, from any screen</span></summary><div id="dl-hist"></div></details></div>`;
-    q("#dl-me").onchange = (e) => { me = e.target.value.trim(); try { localStorage.setItem("aeroturn.me", me); } catch { /* ignore */ } };
+    q("#dl-me").onchange = (e) => { me = e.target.value.trim(); try { localStorage.setItem("aviant.me", me); } catch { /* ignore */ } };
     q("#dl-live").onclick = playLive;
     q("#dl-new").onclick = toggleNew;
     el.onclick = onClick;
@@ -350,7 +350,7 @@ const DecisionLog = (() => {
         '<tr><td colspan="5" class="muted">No steps suggested</td></tr>'}</tbody></table>
       <h3>Open risks</h3>${r.system_risks.length ? `<div>${SV}<ul>${r.system_risks.map((x) => `<li>${h(x)}</li>`).join("")}</ul></div>` : ""}
       ${r.open_risks.length ? `<div>${AS}<ul>${r.open_risks.map((x) => `<li>${h(x)}</li>`).join("")}</ul></div>` : ""}
-      <p class="small muted">Source: ${h(r.source)} for AI-suggested sections; every other section is computed by AeroTurn's deterministic code.</p>`;
+      <p class="small muted">Source: ${h(r.source)} for AI-suggested sections; every other section is computed by Aviant's deterministic code.</p>`;
     q("#dl-rbody", m).onclick = (e) => { const b = e.target.closest("[data-rtx]"); if (b) { close(); openTranscript(+b.dataset.rtx, +b.dataset.line); } };
     q("#dl-rcopy", m).onclick = async () => {
       try { await navigator.clipboard.writeText(q("#dl-rbody", m).innerText); toast("Report copied as text"); } catch { toast("Clipboard not available in this browser", "warn"); }

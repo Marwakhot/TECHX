@@ -40,7 +40,7 @@ const PaxImpact = (() => {
   }
   const needsAction = (b) => b === "failed" || b === "missed" || b === "needs";
   let me = "";
-  try { me = localStorage.getItem("aeroturn.me") || ""; } catch { /* private mode */ }
+  try { me = localStorage.getItem("aviant.me") || ""; } catch { /* private mode */ }
   const PICON = { Critical: "◆", High: "▲", Medium: "●", Low: "○", Unknown: "?" };
   const PRANK = { Critical: 0, High: 1, Medium: 2, Low: 3, Unknown: 4 };
   const prio = (p) => `<span class="px-p ${h(p)}">${PICON[p] || ""} ${h(p)}</span>`;
@@ -293,7 +293,7 @@ const PaxImpact = (() => {
   }
   function onChange(e) {
     const t = e.target;
-    if (t.id === "px-me") { me = t.value.trim(); try { localStorage.setItem("aeroturn.me", me); } catch { /* ignore */ } return; }
+    if (t.id === "px-me") { me = t.value.trim(); try { localStorage.setItem("aviant.me", me); } catch { /* ignore */ } return; }
     if (t.dataset.f !== undefined) { P.f[t.dataset.f] = t.value; return render(); }
     if (t.dataset.showlow) { P.showLow = t.checked; return render(); }
     if (t.dataset.sel) { t.checked ? P.sel.add(t.dataset.sel) : P.sel.delete(t.dataset.sel); return render(); }

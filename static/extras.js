@@ -320,7 +320,7 @@ const Extras = (() => {
   function exportAttack() {
     const r = X.atk, line = (a) => `| ${a.suite === "ai" ? "AI" : "Fixed"} | ${a.name} | ${a.targets} | ${LAYERS[a.stopped_by]?.[0] || a.stopped_by} | ${String(shortIds(a.reason)).replace(/\|/g, "/")} |`;
     download(`guard-attack-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md`, [
-      "# AeroTurn · Guard Attack report", "", `- Result: **${r.state_unchanged && !r.committed ? "state unchanged" : "STATE CHANGED"}**`,
+      "# Aviant · Guard Attack report", "", `- Result: **${r.state_unchanged && !r.committed ? "state unchanged" : "STATE CHANGED"}**`,
       `- Attacks: ${r.attacks.length} · committed: ${r.committed}`, `- State hash: ${r.state_hash_before} → ${r.state_hash_after}`, `- Source: ${r.source}`, "",
       "| Suite | Attack | Rule targeted | Stopped by | Reason |", "|---|---|---|---|---|", ...r.attacks.map(line), "",
       "## Immutability probes", ...r.immutability.map((p) => `- ${p.blocked ? "blocked" : "NOT BLOCKED"}: \`${p.probe}\` (${p.error})`),

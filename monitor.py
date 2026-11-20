@@ -83,7 +83,7 @@ def _minutes_said(text):
     return out
 
 
-def apply_eta(fid, delay_min, source, reason=None, actor="AeroTurn agent", con=None):
+def apply_eta(fid, delay_min, source, reason=None, actor="Aviant agent", con=None):
     """Record a new delay estimate for an AIRBORNE inbound flight. This is field data (like an ETA feed), not a recovery
     decision, so it needs no PIN; it is validated, audited with a state hash (audit replay reproduces it) and invalidates the report."""
     if not isinstance(delay_min, int) or isinstance(delay_min, bool) or not 0 <= delay_min <= 720:
@@ -208,7 +208,7 @@ def _replan(fid, changes, announce):
                                             "top_ok": bool(sim and sim["ok"])})
         if announce:
             con.execute("INSERT INTO notifications(change_id, flight_id, recipient, message) VALUES (NULL, ?, ?, ?)",
-                        (fid, "AeroTurn agent → OCC", f"{fid}: {msg}"[:600]))
+                        (fid, "Aviant agent → OCC", f"{fid}: {msg}"[:600]))
     return {"flight_id": fid, "changes": changes, "source": rep["source"], "top": top and top["title"], "top_ok": bool(sim and sim["ok"])}
 
 
@@ -309,5 +309,5 @@ def start_background():
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
             time.sleep(INTERVAL_S)
-    threading.Thread(target=loop, name="aeroturn-agent", daemon=True).start()
+    threading.Thread(target=loop, name="aviant-agent", daemon=True).start()
     return True

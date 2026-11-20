@@ -22,7 +22,7 @@ RULES = {  # thresholds used for labels; shown to the user, change here
     "DECISION_WINDOW_MIN": 30,    # a hold that could still save a connection must be decided before the onward flight departs
     "STALE_AFTER_MIN": 30,        # flag data that has not been updated for this long while the disruption is active
 }
-MCT_SOURCE = (f"FRA hub minimum connection time {G.LIMITS['MCT_MIN']} min (AeroTurn guard rule). No airport- or itinerary-specific MCT "
+MCT_SOURCE = (f"FRA hub minimum connection time {G.LIMITS['MCT_MIN']} min (Aviant guard rule). No airport- or itinerary-specific MCT "
               f"table (e.g. Schengen / non-Schengen) is configured, so the hub rule is applied to every connection.")
 ASSIST = {"UM": "Unaccompanied minor", "PRM": "Reduced mobility assistance", "MEDICAL": "Medical assistance", "INFANT": "Travelling with an infant",
           "ELDERLY": "Elderly passenger assistance"}
@@ -193,7 +193,7 @@ def analyse(fid):
         "passengers": out, "groups": groups, "rules": RULES, "mct_source": MCT_SOURCE,
         "data": {"computed_at": now.strftime("%H:%M:%S"), "as_of": as_of, "age_min": age,
                  "stale": bool(age is not None and age > RULES["STALE_AFTER_MIN"] and status != "resolved"),
-                 "source": "SIMULATED dataset (AeroTurn seed): no live airline feed is connected",
+                 "source": "SIMULATED dataset (Aviant seed): no live airline feed is connected",
                  "predicted": ["estimated arrival", "available connection time", "connection risk", "status"],
                  "clock": "Simulated clock: dataset times are minutes relative to now, shown as local clock times",
                  "conflicts": conflicts},

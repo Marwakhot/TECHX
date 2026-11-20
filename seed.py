@@ -118,7 +118,7 @@ def has_current_schema(path):
 
 
 def build(path=None):
-    path = path or os.getenv("AEROTURN_DB", "aeroturn.sqlite")
+    path = path or os.getenv("AVIANT_DB", "aviant.sqlite")
     if os.path.exists(path):
         os.remove(path)
     rng, counter = random.Random(812), {}
@@ -209,4 +209,4 @@ def build(path=None):
 
 if __name__ == "__main__":
     build()
-    print("Built aeroturn.sqlite: 11 inbound flights; EK812 +75 min with 280 connecting pax, 45 at risk")
+    print("Built aviant.sqlite: 11 inbound flights; EK812 +75 min with 280 connecting pax, 45 at risk")

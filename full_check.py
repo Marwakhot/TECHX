@@ -65,7 +65,7 @@ def main():
     if not ENV.get("OPENROUTER_API_KEY"):
         sys.exit("OPENROUTER_API_KEY missing in .env: this check needs the real LLM")
     db = os.path.join(tempfile.mkdtemp(), "full.sqlite")
-    env = {**os.environ, "AEROTURN_DB": db, "PORT": str(PORT), "HOST": "127.0.0.1", "AGENT_ENABLED": "0", "PYTHONIOENCODING": "utf-8"}
+    env = {**os.environ, "AVIANT_DB": db, "PORT": str(PORT), "HOST": "127.0.0.1", "AGENT_ENABLED": "0", "PYTHONIOENCODING": "utf-8"}
     log = open(os.path.join(os.path.dirname(db), "server.log"), "w", encoding="utf-8")  # a file, not a pipe: a full pipe would stall the server
     srv = subprocess.Popen([sys.executable, "server.py"], cwd=HERE, env=env, stdout=log, stderr=subprocess.STDOUT)
     try:

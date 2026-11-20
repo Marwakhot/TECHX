@@ -77,7 +77,7 @@ def run(fid="EK812"):
     with closing(S.connect()) as live:
         events = S.rows(live, "SELECT * FROM audit ORDER BY id")
         live_hash = S.state_hash(live)
-    fd, path = tempfile.mkstemp(suffix=".sqlite", prefix="aeroturn-replay-")
+    fd, path = tempfile.mkstemp(suffix=".sqlite", prefix="aviant-replay-")
     os.close(fd)
     try:
         seed.build(path)

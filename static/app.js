@@ -1,4 +1,4 @@
-// AeroTurn OCC front end: hash router, no build step. All server text is escaped with h().
+// Aviant OCC front end: hash router, no build step. All server text is escaped with h().
 const $ = (s) => document.querySelector(s);
 const h = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const sign = (n) => (n >= 0 ? "+" : "") + n;
@@ -88,7 +88,7 @@ async function mapTab() {
   const late = flights.filter((f) => f.delay_min).sort((a, b) => b.delay_min - a.delay_min), onTime = flights.filter((f) => !f.delay_min);
   const action = late.filter((f) => f.at_risk || f.crew_illegal || f.open_nogo);
   $("#tab").innerHTML = `<div class="globe-zone"><div class="globe-stage">
-      <div class="brand"><h2 class="brand-name" aria-label="AeroTurn">${[..."AeroTurn"].map((c, i) => `<span style="--i:${i}">${c}</span>`).join("")}</h2>
+      <div class="brand"><h2 class="brand-name" aria-label="Aviant">${[..."Aviant"].map((c, i) => `<span style="--i:${i}">${c}</span>`).join("")}</h2>
         <p class="brand-sub">Turnaround and disruption recovery · FRA hub</p></div>
       <aside class="live-side" style="grid-column:1"><div class="live-head"><span class="live-dot"></span>Delayed · take action</div>
         <div class="live-big">${late.length}<span> of ${flights.length} inbound delayed</span></div>

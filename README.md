@@ -1,6 +1,6 @@
-# AeroTurn: Turnaround and Atomic Disruption Recovery OCC
+# Aviant: Turnaround and Atomic Disruption Recovery OCC
 
-AeroTurn is a control-room console for the Frankfurt (FRA) hub. It tracks 11 inbound wide-body and narrow-body flights from around the world. The headline crisis is EK812 (DXB→FRA):
+Aviant is a control-room console for the Frankfurt (FRA) hub. It tracks 11 inbound wide-body and narrow-body flights from around the world. The headline crisis is EK812 (DXB→FRA):
 - It arrives 75 minutes late.
 - 45 of its 280 connecting passengers are at risk, and 12 of those are vulnerable.
 - The crew is 20 minutes from the legal duty limit.
@@ -114,17 +114,17 @@ Set these environment variables in the platform dashboard (never commit `.env`):
 | `OPENROUTER_API_KEY` | yes | LLM features return a clear 503 without it; nothing is faked |
 | `OCC_CONTROLLER_PIN` | yes | approvals are refused while it is empty |
 | `OPENROUTER_MODEL` | no | defaults to `google/gemini-2.5-flash-lite` |
-| `AEROTURN_DB` | no | SQLite path; see each platform below |
+| `AVIANT_DB` | no | SQLite path; see each platform below |
 
 ### Railway (recommended for demos)
 1. Push this folder to GitHub, then **New Project → Deploy from GitHub repo**.
 2. Add the variables above. `railway.json` sets the start command (`python server.py`) and a health check on `/api/health`.
 3. **Settings → Networking → Generate Domain.** Railway sets `PORT` and `RAILWAY_ENVIRONMENT`, so the server listens on `0.0.0.0` automatically.
-4. The demo database is seeded on first start. The filesystem resets on each redeploy; to keep state, attach a Volume at `/data` and set `AEROTURN_DB=/data/aeroturn.sqlite`.
+4. The demo database is seeded on first start. The filesystem resets on each redeploy; to keep state, attach a Volume at `/data` and set `AVIANT_DB=/data/aviant.sqlite`.
 
 ### Vercel
 1. Push to GitHub, then **Add New → Project** and import the repo. Framework preset: **Other**; leave build settings empty.
-2. Add the variables above (do not set `AEROTURN_DB`).
+2. Add the variables above (do not set `AVIANT_DB`).
 3. `vercel.json` routes every URL to the serverless function `api/index.py`, which runs the same request handler as `server.py`.
 
 Limits on Vercel (serverless, not a long-running server):

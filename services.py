@@ -14,8 +14,8 @@ import guards as G
 from guards import GuardViolation
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))  # project .env only
-# Vercel's filesystem is read-only except /tmp, so the demo database lives there unless AEROTURN_DB says otherwise.
-DB = os.getenv("AEROTURN_DB") or "aeroturn.sqlite"
+# Vercel's filesystem is read-only except /tmp, so the demo database lives there unless AVIANT_DB says otherwise.
+DB = os.getenv("AVIANT_DB") or "aviant.sqlite"
 if os.getenv("VERCEL") and not DB.startswith("/tmp/"):
     DB = "/tmp/" + os.path.basename(DB)
 MCT, MAX = G.LIMITS["MCT_MIN"], G.LIMITS["MAX_FDP_MIN"]
