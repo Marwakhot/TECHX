@@ -6,10 +6,11 @@ import os
 import tempfile
 from contextlib import closing
 
+import curveballs
 import seed
 import services as S
 
-STATE_EVENTS = ("REBOOK_COMMIT", "CHANGE_APPROVED", "MAINTENANCE_SIGNED", "TASK_DONE", "ETA_UPDATED")
+STATE_EVENTS = ("REBOOK_COMMIT", "CHANGE_APPROVED", "MAINTENANCE_SIGNED", "TASK_DONE", "ETA_UPDATED") + curveballs.STATE_EVENTS
 
 
 def _kp(con, fid):
@@ -64,6 +65,8 @@ def _redo(con, ev, d):
             con.execute("UPDATE tasks SET status = 'DONE' WHERE flight_id = ? AND id = ?", (d["flight"], d["task"]))
         elif ev == "ETA_UPDATED":
             con.execute("UPDATE flights SET delay_min = ?, status = ? WHERE id = ?", (d["delay_min"], d["status"], d["flight"]))
+        elif ev in curveballs.STATE_EVENTS:  # U-4 curveballs (batched rebooking, external seat sale, validated sign-off)
+            curveballs.redo(con, ev, d)
         con.execute("COMMIT")
     except Exception:
         con.execute("ROLLBACK")

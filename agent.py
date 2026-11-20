@@ -218,11 +218,14 @@ def get_report(fid, force=False):
         except Exception as e:  # noqa: BLE001 - never surface key/response bodies
             data, source = validate(fallback(d)), f"Rule-based fallback ({type(e).__name__})"
         data["suggestions"] = drop_noops(d, data["suggestions"])
+        suggestions_source = source
         if not any(s["actions"] for s in data["suggestions"]):
             data["suggestions"] = drop_noops(d, validate(fallback(d))["suggestions"])
+            if source.startswith("LLM"):  # be honest on screen: these options were not written by the LLM
+                suggestions_source = "Rule-based fallback (the LLM proposed only actions that are already done)"
         elif source.startswith("LLM"):
             data["suggestions"] = repair(fid, d, data["suggestions"])
-        return S.cached_report(fid, {"source": source, **data, "built_at": time.time()})
+        return S.cached_report(fid, {"source": source, "suggestions_source": suggestions_source, **data, "built_at": time.time()})
 
 
 REPAIR_SYSTEM = SYSTEM + """
@@ -262,7 +265,8 @@ def repair(fid, d, suggestions):
 
 def scenario_lab(fid, priorities, regenerate=False):
     prio = {p: bool((priorities or {}).get(p)) for p in PRIORITIES}
-    suggestions, source = get_report(fid)["suggestions"], "report"
+    rep = get_report(fid)
+    suggestions, source = rep["suggestions"], f"Live report · {rep.get('suggestions_source') or rep['source']}"
     if regenerate:
         d = S.get_turnaround_and_crew_state(fid)
         try:

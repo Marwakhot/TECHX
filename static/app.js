@@ -72,9 +72,10 @@ function decide(fid, title, actions, after, chaos = false) {
 const SECTIONS = [["map", "Live overview", "Operations"], ["crew", "Crew", "Operations"], ["pax", "Connecting passengers", "Operations"],
   ["mx", "Maintenance", "Operations"], ["log", "Decision log", "Operations"], ["attack", "Guard Attack Mode", "Assurance"], ["replay", "Audit replay", "Assurance"]];
 async function mainView() {
-  $("#view").innerHTML = `<section id="tab"></section>`;
+  $("#view").innerHTML = `<section id="tab"></section><section id="cb-slot"></section>`; // cb-slot: U-4 curveball panels (curveballs.js)
   await { map: mapTab, crew: crewTab, pax: paxTab, mx: mxTab, log: logTab, attack: () => Extras.attackTab($("#tab")), replay: () => Extras.replayTab($("#tab")) }[S.tab]();
   const t = $("#tab")?.querySelector("h1, h2, h3"); if (t) { t.classList.add("tab-title"); t.parentElement.classList.add("tab-head"); }
+  await Curveballs.mount(S.tab, $("#cb-slot")).catch((e) => toast(e.message, "bad"));
 }
 
 // live overview cards either side of the globe
@@ -339,7 +340,9 @@ async function loadReport(id, force) {
     const r = force ? await api("/api/report", { flight_id: id }) : await api(`/api/report/${id}`);
     if (!$("#report") || S.flight !== id) return;
     $("#report").innerHTML = bullets(r.report); $("#report").classList.remove("muted");
-    $("#rsrc").textContent = `AI · ${String(r.generated || "").slice(11, 16)}`; $("#rsrc").title = `${r.source} · ${r.generated} · from call transcripts + live data`;
+    const ai = String(r.source || "").startsWith("LLM"), sAi = String(r.suggestions_source || r.source || "").startsWith("LLM");
+    $("#rsrc").textContent = `${ai ? "AI" : "Rule-based fallback (AI unavailable)"}${ai && !sAi ? " · options rule-based" : ""} · ${String(r.generated || "").slice(11, 16)}`;
+    $("#rsrc").title = `Report: ${r.source} · Options: ${r.suggestions_source || r.source} · ${r.generated} · from call transcripts + live data`;
     $("#sugg").innerHTML = r.suggestions.map((s, i) => `<div class="sugg x-pick" data-opt="${i}"><div class="muted small">Option ${i + 1}</div><b>${h(s.title)}</b>
       <p class="small clamp2" title="${h(s.why)}">${h(s.why)}</p><div class="small">${actionsText(s.actions)}</div>${s.revised_from ? `<div class="small warn" title="${h(shortIds(s.revised_from))}">↻ Revised after a guard refusal</div>` : ""}</div>`).join("");
     $("#sugg").onclick = (e) => { const c = e.target.closest("[data-opt]"); if (!c || !r.suggestions[c.dataset.opt].actions.length) return;

@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import agent
+import curveballs
 import decisions
 import ledger
 import monitor
@@ -29,7 +30,7 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/decisionlog.js": ("decisionlog.js", "text/javascript"), "/decisionlog.css": ("decisionlog.css", "text/css"),
          "/paximpact.js": ("paximpact.js", "text/javascript"), "/paximpact.css": ("paximpact.css", "text/css"),
          "/surfaces.css": ("surfaces.css", "text/css"), "/retro.css": ("retro.css", "text/css"),
-         "/flightmap.js": ("flightmap.js", "text/javascript")}
+         "/flightmap.js": ("flightmap.js", "text/javascript"), "/curveballs.js": ("curveballs.js", "text/javascript")}
 BIG_POST = {"/api/ledger/transcribe": 8_500_000}  # base64 audio; every other POST stays capped at 64 KB
 ASSET = re.compile(r"/(jet|globe)/[a-z0-9-]{1,40}\.(webp|svg)")  # intro + globe images: fixed folders, strict names, no traversal
 FID = r"(?P<fid>[A-Z0-9]{2,8})"
@@ -45,7 +46,8 @@ GET = {"/api/flights": lambda: S.list_flights(), f"/api/flight/{FID}": S.get_tur
        "/api/llm": lambda: {"model": agent.MODEL, "key_configured": bool(os.getenv("OPENROUTER_API_KEY"))},
        # Autonomous agent: status is cheap (use it for health checks); tick runs one monitoring pass (point an uptime pinger
        # at it on Vercel, where no background thread survives between requests). Ticks are rate-limited to one per 10 s.
-       "/api/agent/status": lambda: monitor.status(), "/api/agent/tick": lambda: monitor.tick(), "/api/health": lambda: {"ok": True}}
+       "/api/agent/status": lambda: monitor.status(), "/api/agent/tick": lambda: monitor.tick(), "/api/health": lambda: {"ok": True},
+       f"/api/cb/{FID}": curveballs.view}  # U-4 curveballs
 POST = {
     "/api/report": lambda b: agent.get_report(b["flight_id"], force=True),
     "/api/comms": lambda b: S.log_call(b["flight_id"], b.get("speaker"), b["text"]),
@@ -56,7 +58,7 @@ POST = {
     "/api/approve": lambda b: S.approve_change(b["id"], b.get("controller"), b.get("pin"), bool(b.get("approve", True))),
     "/api/signoff": lambda b: S.sign_off_maintenance(b["item_id"], b.get("licence")),
     "/api/task": lambda b: S.mark_task_done(b["flight_id"], b["task_id"]),
-    "/api/reset": lambda b: seed.build(S.DB) or monitor.reset() or {"status": "RESET"},
+    "/api/reset": lambda b: seed.build(S.DB) or monitor.reset() or curveballs.ensure() or {"status": "RESET"},
     # live delay estimate from an ops feed / dispatcher (field data for an airborne inbound, not a decision; the agent re-plans)
     "/api/ops/eta": lambda b: monitor.apply_eta(b["flight_id"], b["delay_min"], str(b.get("source") or "Ops feed")[:80], b.get("reason"),
                                                 str(b.get("source") or "Ops feed")[:40]),
@@ -83,6 +85,13 @@ POST = {
     # direct atomic rebooking commits passenger moves, so it needs the controller name + PIN like every other commit
     "/api/rebook": lambda b: S.execute_atomic_passenger_rebook(b["flight_id"], None, b.get("chaos") if b.get("chaos") in ("seat", "bag") else False,
                                                                S._check_pin(b.get("controller"), b.get("pin"))),
+    # U-4 curveballs (curveballs.py): batched rebooking, crew-channel messages, validated sign-offs, bag-plan rebook
+    "/api/cb/batch-rebook": lambda b: curveballs.batch_rebook(b["flight_id"], b.get("controller"), b.get("pin"), b.get("chaos_batch"),
+                                                             bool(b.get("chaos_repeat"))),
+    "/api/cb/handoff/resolve": lambda b: curveballs.resolve_handoff(b["id"], b.get("controller"), b.get("pin")),
+    "/api/cb/crew-message": lambda b: curveballs.crew_message(b["flight_id"], b.get("sender"), b["text"]),
+    "/api/cb/signoff": lambda b: curveballs.submit_signoff(b["item_id"], b.get("engineer_id"), b.get("signed_at"), b.get("result", "OK")),
+    "/api/cb/rebook": lambda b: curveballs.rebook_one(b["flight_id"], b["pax_id"], b["to_flight"], b.get("controller"), b.get("pin")),
 }
 
 
@@ -163,6 +172,7 @@ class Handler(BaseHTTPRequestHandler):
 def ensure_db():
     if not os.path.exists(S.DB) or not seed.has_current_schema(S.DB):
         seed.build(S.DB)
+    curveballs.ensure()  # U-4 curveball tables + read-only duty trigger (idempotent)
 
 
 if __name__ == "__main__":
