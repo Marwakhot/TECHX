@@ -228,6 +228,35 @@ def get_turnaround_and_crew_state(fid):
         }
 
 
+def hub_status(fid):
+    """Every decision recorded for a flight, from any tab, for the Decision hub: staged/approved changes (crew, maintenance,
+    passenger recommendations, ledger items, hub plans) plus the Curveballs rebookings that are written only to the audit log.
+    Each entry carries status, approver, the time it was decided and any note, newest first."""
+    with closing(connect()) as con:
+        _inbound(con, fid)
+        decided = {}  # change id -> (ts, actor) of the approve/reject/rollback, which can be later than the staging time
+        extra = []
+        for e in rows(con, "SELECT * FROM audit WHERE action IN ('CHANGE_APPROVED', 'CHANGE_REJECTED', 'CHANGE_ROLLED_BACK', "
+                           "'CB_BATCH_RUN', 'CB_REBOOK_COMMIT') ORDER BY id"):
+            d = json.loads(e["detail"] or "{}")
+            if e["action"].startswith("CHANGE_"):
+                decided[d.get("id")] = (e["ts"], e["actor"])
+            elif d.get("flight") == fid:
+                moves = d.get("moves") or []
+                extra.append({"id": f"A{e['id']}", "status": "APPROVED", "by": e["actor"], "ts": e["ts"], "kinds": ["REBOOK"],
+                              "title": (f"Rebooked {moves[0].get('pax_id')} to {moves[0].get('to_flight')}" if moves
+                                        else f"Batch rebooking run ({d.get('batches', 0)} batches)"),
+                              "note": "", "source": "Connecting passengers"})
+        out = []
+        for c in rows(con, "SELECT * FROM changes WHERE flight_id = ? ORDER BY id", (fid,)):
+            acts = json.loads(c["actions"] or "[]")
+            ts, by = decided.get(c["id"], (c["ts"], c["decided_by"]))
+            kinds = [a.get("kind") for a in acts] or (["SIGN_OFF"] if c["title"].startswith("Maintenance sign-off") else [])
+            out.append({"id": f"C{c['id']}", "status": c["status"], "by": c["decided_by"] or by or "", "ts": ts, "kinds": kinds,
+                        "title": c["title"], "note": c["reason"] or "", "source": c["proposed_by"] or "", "actions": acts})
+        return {"flight_id": fid, "decisions": sorted(out + extra, key=lambda x: x["ts"], reverse=True)}
+
+
 # ---------- atomic rebooking ----------
 def _plan_rebooking(con, inb, tiers=None):
     """Greedy, baggage-aware seat allocation, vulnerable flyers first: the earliest same-destination flight that the

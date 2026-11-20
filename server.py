@@ -47,7 +47,8 @@ GET = {"/api/flights": lambda: S.list_flights(), f"/api/flight/{FID}": S.get_tur
        # Autonomous agent: status is cheap (use it for health checks); tick runs one monitoring pass (point an uptime pinger
        # at it on Vercel, where no background thread survives between requests). Ticks are rate-limited to one per 10 s.
        "/api/agent/status": lambda: monitor.status(), "/api/agent/tick": lambda: monitor.tick(), "/api/health": lambda: {"ok": True},
-       f"/api/cb/{FID}": curveballs.view}  # U-4 curveballs
+       f"/api/cb/{FID}": curveballs.view,  # U-4 curveballs
+       f"/api/hub/{FID}": S.hub_status}  # Decision hub: every decision for a flight, from any tab
 POST = {
     "/api/report": lambda b: agent.get_report(b["flight_id"], force=True),
     "/api/comms": lambda b: S.log_call(b["flight_id"], b.get("speaker"), b["text"]),

@@ -70,10 +70,10 @@ function decide(fid, title, actions, after, chaos = false) {
 // ---------- main page (sections are chosen from the sidebar menu) ----------
 // Operations = the controller's daily workflow; Assurance = safety / compliance tools that prove the system can be trusted
 const SECTIONS = [["map", "Live overview", "Operations"], ["crew", "Crew", "Operations"], ["pax", "Connecting passengers", "Operations"],
-  ["mx", "Maintenance", "Operations"], ["log", "Decision log", "Operations"], ["attack", "Guard Attack Mode", "Assurance"], ["replay", "Audit replay", "Assurance"]];
+  ["mx", "Maintenance", "Operations"], ["hub", "Decision hub", "Operations"], ["log", "Decision log", "Operations"], ["attack", "Guard Attack Mode", "Assurance"], ["replay", "Audit replay", "Assurance"]];
 async function mainView() {
   $("#view").innerHTML = `<section id="tab"></section><section id="cb-slot"></section>`; // cb-slot: U-4 curveball panels (curveballs.js)
-  await { map: mapTab, crew: crewTab, pax: paxTab, mx: mxTab, log: logTab, attack: () => Extras.attackTab($("#tab")), replay: () => Extras.replayTab($("#tab")) }[S.tab]();
+  await { map: mapTab, crew: crewTab, pax: paxTab, mx: mxTab, hub: () => labView(S.flight), log: logTab, attack: () => Extras.attackTab($("#tab")), replay: () => Extras.replayTab($("#tab")) }[S.tab]();
   const t = $("#tab")?.querySelector("h1, h2, h3"); if (t) { t.classList.add("tab-title"); t.parentElement.classList.add("tab-head"); }
   await Curveballs.mount(S.tab, $("#cb-slot")).catch((e) => toast(e.message, "bad"));
 }
@@ -374,24 +374,30 @@ function hubChecks(s, id) {
   c.push(["net", "Downstream network", !net, k.network_delay_added ? `Adds ${k.network_delay_added} min of delay to onward flights.` : "No onward flights are affected.", `Affected: ${k.network_delay_added} min of onward delay. Pick a plan with a shorter hold.`, null]);
   return c;
 }
+// The hub is its own menu tab (#/tab/hub). #/lab/<flight> still works: it opens the hub tab for that flight.
 async function labView(id) {
-  S.flight = id; S.hubPick = 0;
-  $("#view").innerHTML = `<div class="row"><a href="#/flight/${h(id)}">← Live report ${h(id)}</a></div>
+  if (S.hubFlight !== id) { S.hubFlight = id; S.hubPick = 0; }
+  const flights = await api("/api/flights");
+  $("#tab").innerHTML = `<div class="row" style="margin-top:12px"><label>Flight <select id="pick">${flights.map((f) =>
+    `<option value="${h(f.id)}" ${f.id === id ? "selected" : ""}>${h(f.id)} ${h(f.origin)}→FRA ${f.delay_min ? "+" + f.delay_min + " min" : ""}</option>`).join("")}
+    </select></label><a href="#/flight/${h(id)}">Open live report →</a></div>
     <div class="hub"><h2 class="hub-title">Decision hub · ${h(id)}</h2><p class="hub-sub">Everything a scenario depends on, checked in one place.</p>
     <div class="hub-sec"><i>1</i>PRIORITIES</div>
     <div class="hub-row"><div class="hub-pills" id="hub-p">${HUB_P.map(([k, l]) => `<button class="hub-pill" data-p="${k}">${l}</button>`).join("")}</div>
       <button class="hub-regen" id="regen">Regenerate scenarios</button><span id="lsrc" class="muted small"></span></div>
     <p class="hub-note" id="hub-note"></p><div id="scen" class="hub-scen"></div><div id="hub-rest"></div></div>`;
+  $("#pick").onchange = (e) => { S.flight = e.target.value; mainView(); };
   const mark = () => { const on = hubOn(S.prio); document.querySelectorAll("#hub-p .hub-pill").forEach((b) => b.classList.toggle("on", on.includes(b.dataset.p))); };
   $("#hub-p").onclick = (e) => { const b = e.target.closest("[data-p]"); if (!b) return; const ks = HUB_P.find(([k]) => k === b.dataset.p)[2], on = !ks.some((k) => S.prio[k]);
     ks.forEach((k) => (S.prio[k] = on)); mark(); $("#hub-note").innerHTML = '<b>Priorities changed.</b> Regenerate to build new scenarios for them.'; };
-  $("#regen").onclick = () => loadLab(id, true);
+  $("#regen").onclick = () => { S.hubPick = 0; loadLab(id, true); };
   mark(); loadLab(id);
 }
 async function loadLab(id, regenerate = false) {
   $("#scen").innerHTML = `<p class="muted">${regenerate ? "Asking the agent for new scenarios, then dry-running them…" : "Dry-running the recommended scenarios…"}</p>`; $("#hub-rest").innerHTML = "";
   try {
-    const c = await api("/api/compare", { flight_id: id, priorities: S.prio, regenerate, narrate: false }), rows = c.rows.slice(0, 3), used = hubOn(c.priorities);
+    const [c, d] = await Promise.all([api("/api/compare", { flight_id: id, priorities: S.prio, regenerate, narrate: false }), api(`/api/flight/${id}`)]);
+    const rows = c.rows.slice(0, 3), used = hubOn(c.priorities);
     $("#lsrc").textContent = `Source: ${c.scenario_source}`;
     $("#hub-note").innerHTML = `Scenarios built to protect: ${used.length ? used.map((k) => HUB_P.find(([p]) => p === k)[1].toLowerCase()).join(", ") : "the agent's default balance"}`;
     const draw = () => {
@@ -406,7 +412,7 @@ async function loadLab(id, regenerate = false) {
       const parts = s.ok ? [["Rebooking & care", k.pax_cost_eur || 0, "#e8c79a"], ["Delays", 100 * (k.network_delay_added || 0), "#e8b2a4"]].filter((p) => p[1] > 0) : [];
       $("#hub-rest").innerHTML = `<div class="hub-sec"><i>2</i>CHECKS FOR: ${h(s.title).toUpperCase()}</div>
         <div class="hub-checks">${ch.map(([ic, l, ok, txt, fix, link]) => `<div class="hub-ck ${ok ? "g" : "r"}"><div class="hub-ckh"><span class="hub-ico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICO[ic]}</svg></span>${h(l).toUpperCase()}</div>
-          <div class="hub-st">${ok ? "✓ Ready" : "⚑ Issue"}</div><p>${h(txt)}</p>${ok ? "" : `<div class="hub-fix"><b>Fix this:</b> ${h(fix)}</div>${link ? `<a class="hub-go" href="${link[0]}">Go to ${h(link[1])} →</a>` : ""}`}</div>`).join("")}</div>
+          <div class="hub-st">${ok ? "✓ Ready" : "⚑ Issue"}</div><p>${h(txt)}</p>${ok ? "" : `<div class="hub-fix"><b>Fix this:</b> ${h(fix)}</div><button class="hub-go" data-stage="${ic}">Review ${h(l)} stage ↓</button>${link ? `<a class="hub-go2" href="${link[0]}">Open ${h(link[1])} →</a>` : ""}`}</div>`).join("")}</div>
         <div class="hub-sec"><i>3</i>COST IMPACT · ESTIMATES</div>
         <div class="hub-cost"><div class="hub-box"><div class="hub-bh">TOTAL COST BY SCENARIO</div>${rows.map((r, i) => `<div class="hub-cr ${i === pick ? "on" : ""}"><span>Scenario ${L[i]}${r.ok && r.kpis.total_cost_eur === low ? "<em>Lowest</em>" : ""}</span>
             <div class="hub-tr"><i style="width:${r.ok ? (r.kpis.total_cost_eur / max) * 100 : 0}%"></i></div><b>${r.ok ? eur(r.kpis.total_cost_eur) : "—"}</b></div>`).join("")}</div>
@@ -414,38 +420,154 @@ async function loadLab(id, regenerate = false) {
             <div class="hub-split">${parts.map(([l, v, c]) => `<div style="flex:${v};background:${c}"><small>${l}</small><b>${eur(v)}</b></div>`).join("") || '<p class="muted small">No cost estimate.</p>'}</div>
             <div class="hub-tot"><span>Estimated total</span><b>${s.ok ? eur(k.total_cost_eur) : "—"}</b></div></div></div>
         <div class="hub-sec"><i>4</i>REVIEW AND APPROVE</div><div id="hub-ap"></div>`;
-      hubApprove(id, s, bad);
+      const open = hubApprove(id, s, bad, d);
+      $("#hub-rest").onclick = (e) => { const b = e.target.closest(".hub-go[data-stage]"); if (b) open(b.dataset.stage); };
     };
     $("#scen").onclick = (e) => { const b = e.target.closest("[data-i]"); if (b) { S.hubPick = +b.dataset.i; draw(); } };
-    S.hubPick = 0; draw();
+    if (!(S.hubPick < rows.length)) S.hubPick = 0;
+    draw();
   } catch (e) { toast(e.message, "bad"); $("#scen").innerHTML = `<p class="bad">${h(e.message)}</p>`; }
 }
 
-// Approval: what gets triggered, split by area. Approve unlocks only after every area tab has been opened (and all checks pass).
-const HUB_AREAS = [["pax", "Passengers", ["REBOOK", "REBOOK_AT_RISK", "REBOOK_TIERS", "DELAY", "GATE_CHANGE", "DEPARTURE_RELEASE"]], ["crew", "Crew", ["CREW_SWAP", "CREW_AUTOSWAP"]], ["mx", "Maintenance", ["ASSIGN_ENGINEER"]]];
-function hubApprove(id, s, bad) {
-  const box = $("#hub-ap"), k = s.kpis || {}, acts = s.actions || [], rev = new Set(), of = (ks) => acts.filter((a) => ks.includes(a.kind));
-  let tab = null;
-  const summary = {
-    pax: () => { const rb = of(["REBOOK", "REBOOK_AT_RISK", "REBOOK_TIERS"]), n = rb.filter((a) => a.kind === "REBOOK").length, batch = rb.some((a) => a.kind !== "REBOOK");
-      return [[batch ? k.protected ?? "—" : n, "passengers rebooked"], [k.vulnerable_at_risk ?? "—", "vulnerable still at risk"], [k.at_risk ?? "—", "still miss their connection"], [`${k.network_delay_added ?? 0} min`, "onward delay added"]]; },
-    crew: () => { const sw = of(["CREW_SWAP"]).length, auto = of(["CREW_AUTOSWAP"]).length;
-      return [[auto ? "All illegal" : sw, auto ? "crew swapped to legal standby" : "crew swaps"], [k.crew_illegal ?? 0, "crew over the duty limit after"], [`${k.crew_min_margin ?? "—"} min`, "smallest duty margin"]]; },
-    mx: () => [[of(["ASSIGN_ENGINEER"]).length, "engineer assignments"], [k.open_nogo ?? 0, "NO-GO items still open after"]] };
+// ---------- Review and approve ----------
+// Five operational areas, each a stage the Operations Manager reviews inside the hub. Only areas with actions need review.
+// [key, label, action kinds that belong to it, page with the full detail, page name]
+const REBOOK_KINDS = ["REBOOK", "REBOOK_AT_RISK", "REBOOK_TIERS"];
+const HUB_AREAS = [["net", "Downstream network", ["DELAY", "GATE_CHANGE", "DEPARTURE_RELEASE"], (id) => `#/flight/${id}`, "Live report"],
+  ["mx", "Maintenance", ["ASSIGN_ENGINEER", "SIGN_OFF"], () => "#/tab/mx", "Maintenance page"],
+  ["crew", "Crew", ["CREW_SWAP", "CREW_AUTOSWAP"], () => "#/tab/crew", "Crew page"],
+  ["bag", "Baggage", REBOOK_KINDS, () => "#/tab/pax", "Connecting passengers page"],
+  ["pax", "Passengers", REBOOK_KINDS, () => "#/tab/pax", "Connecting passengers page"]];
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+const hhmm = (ts) => String(ts || "").slice(11, 16);
+
+// Which stages the manager has opened, per flight + area + exact actions (a different plan needs a fresh review).
+// Session storage only keeps this across page changes; losing it just means reviewing again.
+const hubSeen = (() => { try { return JSON.parse(sessionStorage.getItem("aviant.hubSeen")) || {}; } catch { return {}; } })();
+const saveSeen = () => { try { sessionStorage.setItem("aviant.hubSeen", JSON.stringify(hubSeen)); } catch { /* private mode */ } };
+
+// What each approval does and what it fixes, per area. Plain text; escaped where it is drawn.
+function hubItems(area, s, d) {
+  const k = s.kpis || {}, b = d.kpis, o = d.outbound, acts = s.actions || [], of = (ks) => acts.filter((a) => ks.includes(a.kind));
+  const vul = (ps) => ps.filter((p) => p.tier !== "STANDARD").length;
+  if (area === "net") return of(HUB_AREAS[0][2]).map((a) => {
+    if (a.kind === "DELAY" && a.flight_id !== o.id) {
+      const p = d.passengers.filter((x) => x.at_risk && x.onward === a.flight_id), v = vul(p);
+      return { what: `Hold ${a.flight_id} by ${a.minutes} min`, resolves: p.length
+        ? `${plural(p.length, "connecting passenger")}${v ? ` (${v} vulnerable)` : ""} from ${d.flight.id} can still make ${a.flight_id} to ${p[0].dest}.`
+        : `Keeps ${a.flight_id} in step with the late arrival of ${d.flight.id}.` }; }
+    if (a.kind === "DELAY") return { what: `Retime ${o.id} by ${a.minutes} min`, resolves: b.turn_gap > 0
+      ? `The turnaround runs ${b.turn_gap} min past the scheduled departure; ${o.id} leaves when the aircraft is ready.` : `Gives the turnaround room to finish before ${o.id} leaves.` };
+    if (a.kind === "GATE_CHANGE") { const remote = d.gates.find((g) => g.id === o.gate)?.kind === "REMOTE";
+      return { what: `Move ${a.flight_id} from ${o.gate} to gate ${a.gate}`, resolves: remote
+        ? `Replaces a remote stand with a contact gate: no bus transfer, faster boarding and a shorter bag connection.` : `Frees up boarding and bag loading for ${a.flight_id}.` }; }
+    return { what: `Release ${a.flight_id} for departure`, resolves: `${a.flight_id} is cleared to leave, with legal crew and no open NO-GO item.` };
+  });
+  if (area === "mx") return of(["ASSIGN_ENGINEER"]).map((a) => {
+    const m = d.maintenance.find((x) => x.id === a.item_id), e = d.engineers.find((x) => x.id === a.engineer_id);
+    return { what: `Assign ${e?.name || a.engineer_id} to ${a.item_id}${m ? ` (${m.item})` : ""}`, resolves: m?.severity === "NO-GO"
+      ? `Starts the fix on the NO-GO item that blocks ${o.id}. The engineer then signs it off with their licence.` : `Gets ${a.item_id} worked on before ${o.id} departs.` };
+  });
+  if (area === "crew") return of(HUB_AREAS[2][2]).map((a) => {
+    if (a.kind === "CREW_AUTOSWAP") { const over = d.crew.filter((c) => c.margin < 0);
+      return { what: `Replace ${plural(over.length || 1, "crew member")} over the duty limit with legal standby crew`, resolves: over.length
+        ? `${over.map((c) => `${c.role} ${c.id} (${-c.margin} min over)`).join(", ")} would break the duty limit on ${o.id}. After the swap the tightest margin is ${k.crew_min_margin} min.`
+        : `Keeps the ${o.id} crew inside duty limits.` }; }
+    const c = d.crew.find((x) => x.id === a.crew_id);
+    return { what: `Replace ${c ? c.role + " " : ""}${a.crew_id} with standby ${a.standby_id}`, resolves: c && c.margin < 0
+      ? `${a.crew_id} would be ${-c.margin} min over the duty limit on ${o.id}.` : `Adds duty-time margin for ${o.id}.` };
+  });
+  if (area === "bag") {
+    if (!of(REBOOK_KINDS).length) return [];
+    const fixed = Math.max((b.bags_short_connection || 0) - (k.bags_short_connection || 0), 0);
+    return [{ what: "Move checked bags with every rebooked passenger", resolves: [fixed ? `${plural(fixed, "bag")} no longer miss the connection.` : "Bags travel on the same flight as their passengers.",
+      k.bags_rush ? `${plural(k.bags_rush, "bag")} rush-tagged where only the passenger makes the flight.` : ""].filter(Boolean).join(" ") }];
+  }
+  return of(REBOOK_KINDS).map((a) => {
+    if (a.kind === "REBOOK") { const p = d.passengers.find((x) => x.id === a.pax_id);
+      return { what: `Rebook ${a.pax_id} onto ${a.to_flight}`, resolves: `${a.pax_id}${p ? ` (${p.tier})` : ""} misses ${p?.onward || "their connection"}; ${a.to_flight} gets them to ${p?.dest || "their destination"}.` }; }
+    const saved = Math.max((b.at_risk || 0) - (k.at_risk || 0), 0), v = b.vulnerable_at_risk || 0;
+    return { what: a.kind === "REBOOK_TIERS" ? `Rebook ${(a.tiers || []).join(", ")} passengers off ${a.flight_id}` : `Rebook every at-risk passenger off ${a.flight_id}, vulnerable first`,
+      resolves: `${saved} of ${b.at_risk} at-risk passengers reach their destination${v ? `, vulnerable passengers first` : ""}.` +
+        (k.at_risk ? ` ${k.at_risk} still have no seat${k.vulnerable_at_risk ? ` (${k.vulnerable_at_risk} vulnerable)` : ""}.` : "") };
+  });
+}
+
+// The stage page shown inside the hub: just the facts behind that area's approvals, plus a link to the full page.
+function hubStage(area, s, d) {
+  const k = s.kpis || {}, b = d.kpis, o = d.outbound, tbl = (head, body) => body.length
+    ? `<table class="hub-dt"><thead><tr>${head.map((x) => `<th>${h(x)}</th>`).join("")}</tr></thead><tbody>${body.map((r) => `<tr>${r.map((x) => `<td>${h(x)}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "";
+  const risk = {};
+  d.passengers.filter((p) => p.at_risk).forEach((p) => { const r = risk[p.onward] ||= { dest: p.dest, conn: p.conn_min, n: 0, v: 0, alts: p.options.length }; r.n++; r.v += p.tier !== "STANDARD"; r.conn = Math.min(r.conn, p.conn_min); });
+  if (area === "net") return tbl(["Onward flight", "To", "At-risk pax", "Connection now", "Hold in plan"], Object.entries(risk).map(([f, r]) =>
+    [f, r.dest, r.n, `${r.conn} min (MCT ${d.limits.MCT_MIN})`, ((s.actions || []).find((a) => a.kind === "DELAY" && a.flight_id === f)?.minutes ?? 0) + " min"])) +
+    `<p class="small muted">Outbound ${o.id} at ${o.gate} · turnaround ${sign(b.turn_gap)} min vs schedule · onward hold cap ${d.limits.MAX_ONWARD_HOLD_MIN} min · plan adds ${k.network_delay_added || 0} min network delay</p>`;
+  if (area === "mx") return tbl(["Item", "Fault", "Severity", "Status", "Engineer"], d.maintenance.map((m) => [m.id, m.item, m.severity, m.status, m.engineer || "—"]));
+  if (area === "crew") return tbl(["Crew", "Role", "Duty margin now", "Legal standby"], d.crew.filter((c) => c.margin < 60).map((c) => [c.id, c.role, `${c.margin} min`, c.options.length])) ||
+    '<p class="small muted">No crew member is within 60 min of the duty limit.</p>';
+  if (area === "bag") return tbl(["", "Now", "After the plan"], [["Bags on connecting passengers", b.bags, k.bags ?? b.bags], ["Below the bag connection time", b.bags_short_connection, k.bags_short_connection ?? "—"],
+    ["Rush-tagged", b.bags_rush, k.bags_rush ?? "—"]]) + `<p class="small muted">Bag minimum connection time ${b.bag_mct} min.</p>`;
+  return tbl(["Onward flight", "To", "At-risk pax", "Vulnerable", "Alternatives"], Object.entries(risk).map(([f, r]) => [f, r.dest, r.n, r.v, r.alts])) +
+    `<p class="small muted">After the plan: ${k.at_risk ?? "—"} still miss their connection, ${k.vulnerable_at_risk ?? "—"} of them vulnerable.</p>`;
+}
+
+const DEC_WORD = { APPROVED: "Approved", PENDING: "Awaiting approval", REJECTED: "Rejected", ROLLED_BACK: "Rolled back", BLOCKED: "Blocked by guards" };
+const decLine = (x) => `<span class="hub-dec ${x.status === "APPROVED" ? "g" : x.status === "PENDING" ? "" : "r"}">${DEC_WORD[x.status] || h(x.status)}${x.by ? ` by ${h(x.by)}` : ""} · ${h(hhmm(x.ts))}</span>
+  <span class="small muted">${h(x.title)}${x.note ? ` · ${h(shortIds(x.note))}` : ""}</span>`;
+
+// Returns open(area) so the checks in step 2 can send the manager to a stage.
+function hubApprove(id, s, bad, d) {
+  const box = $("#hub-ap"), acts = s.actions || [], hubStart = Date.now();
+  const areas = HUB_AREAS.map(([a, l, kinds, href, page]) => {
+    const items = hubItems(a, s, d);
+    return { a, l, kinds, href: href(id), page, items, key: `${id}|${a}|${JSON.stringify(items.map((x) => x.what))}` };
+  });
+  const need = areas.filter((x) => x.items.length), seen = (x) => !!hubSeen[x.key];
+  let openA = null, decs = null, known = null;
+  const mine = () => S.hubApproved?.[id] && decs?.find((x) => x.id === S.hubApproved[id].id);
+  const latest = (x) => decs?.find((dc) => dc.kinds.some((kd) => x.kinds.includes(kd)));
   const draw = () => {
-    const all = rev.size === HUB_AREAS.length, ready = all && !bad.length, area = HUB_AREAS.find(([a]) => a === tab);
-    box.innerHTML = `<div class="hub-rv"><div class="hub-rvt">${HUB_AREAS.map(([a, l, ks]) => `<button class="hub-rvb ${tab === a ? "on" : ""} ${rev.has(a) ? "seen" : ""}" data-a="${a}">
-        <span>${rev.has(a) ? "✓" : "○"}</span>${l}<small>${of(ks).length} action${of(ks).length === 1 ? "" : "s"}</small></button>`).join("")}</div>
-      <div class="hub-rvp">${area ? `<div class="hub-rvs">${summary[tab]().map(([v, l]) => `<div><b>${h(String(v))}</b><span>${h(l)}</span></div>`).join("")}</div>
-        <div class="hub-bh">ACTIONS THAT WILL RUN ON APPROVAL</div><div class="hub-rva">${of(area[2]).length ? actionsText(of(area[2])) : '<span class="muted">No actions in this area. Nothing changes here.</span>'}</div>`
-        : '<p class="muted">Open each area to see exactly what you are authorising. Approve unlocks once all three have been reviewed.</p>'}</div></div>
-      <div class="hub-ap ${bad.length ? "r" : ready ? "g" : ""}"><div><h3>${bad.length ? `${bad.length} issue${bad.length > 1 ? "s" : ""} to fix first` : ready ? "Reviewed and ready" : `Review ${HUB_AREAS.length - rev.size} more area${HUB_AREAS.length - rev.size === 1 ? "" : "s"}`}</h3>
-        <p>${bad.length ? h(bad.map((x) => x[3]).join(" ")) : `${rev.size} of ${HUB_AREAS.length} reviewed: ${HUB_AREAS.map(([a, l]) => `${rev.has(a) ? "✓" : "○"} ${l}`).join(" · ")}`}</p></div>
-        <div class="hub-apr"><button id="hub-go" ${ready ? "" : "disabled"}>Approve operational plan</button><small>${ready ? `Runs ${acts.length} action${acts.length === 1 ? "" : "s"} as one step. Nothing is partly applied.` : "Locked until every area is reviewed and every check is ready."}</small></div></div>`;
-    box.querySelector(".hub-rvt").onclick = (e) => { const b = e.target.closest("[data-a]"); if (!b) return; tab = b.dataset.a; rev.add(tab); draw(); };
-    $("#hub-go").onclick = () => ready && decide(id, s.title, s.actions, (res) => res?.status === "APPROVED" && (location.hash = `#/flight/${id}`), false);
+    const done = mine(), left = need.filter((x) => !seen(x)), ready = !done && need.length && !left.length && !bad.length;
+    const fresh = decs && known ? decs.filter((x) => !known.has(x.id) && x.id !== S.hubApproved?.[id]?.id) : [];
+    box.innerHTML = (fresh.length ? `<div class="hub-upd"><b>Updated from another page.</b> ${fresh.slice(0, 3).map((x) => `${h(x.title)}: ${DEC_WORD[x.status] || h(x.status)}${x.by ? ` by ${h(x.by)}` : ""} at ${h(hhmm(x.ts))}`).join(" · ")}.
+        These scenarios were built before that; regenerate to plan from the new state.</div>` : "") +
+      `<div class="hub-ar">${areas.map((x) => { const last = latest(x), st = done && x.items.length ? ["g", "✓ Approved"] : !x.items.length ? ["n", "Nothing to approve"] : seen(x) ? ["g", "✓ Reviewed"] : ["w", "Review needed"];
+        return `<div class="hub-arow ${openA === x.a ? "open" : ""}" id="hub-a-${x.a}"><div class="hub-arh"><span class="hub-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICO[x.a]}</svg></span>
+          <b>${h(x.l)}</b><span class="hub-pillst ${st[0]}">${st[1]}</span>${x.items.length ? `<button class="hub-rvbtn" data-a="${x.a}">${openA === x.a ? "Close" : seen(x) ? "Review again" : "Review stage"}</button>` : ""}</div>
+          ${x.items.length ? `<div class="hub-ai">${x.items.map((it) => `<div class="hub-it"><div><small>APPROVE</small>${h(it.what)}</div><div><small>RESOLVES</small>${h(it.resolves)}</div></div>`).join("")}</div>` : ""}
+          ${last ? `<div class="hub-last"><small>LATEST DECISION</small>${decLine(last)}</div>` : ""}
+          ${openA === x.a ? `<div class="hub-stage">${hubStage(x.a, s, d)}<a class="hub-pg" data-back="${x.a}" href="${x.href}">Open the full ${h(x.page)} →</a></div>` : ""}</div>`; }).join("")}</div>
+      <div class="hub-ap ${done ? "g" : bad.length ? "r" : ready ? "g" : ""}"><div>${done ? `<h3>Plan approved</h3><p>${decLine(done)}</p><p class="small muted" style="margin-top:6px">Applied as one step to ${need.map((x) => x.l).join(", ") || "the plan"}. Each page and the Decision log show the same decision.</p>`
+        : `<h3>${bad.length ? `${bad.length} issue${bad.length > 1 ? "s" : ""} to fix first` : !need.length ? "Nothing to approve" : ready ? "Reviewed and ready" : `Review ${plural(left.length, "more stage")}`}</h3>
+        <p>${bad.length ? h(bad.map((x) => x[3]).join(" ")) : need.map((x) => `${seen(x) ? "✓" : "○"} ${h(x.l)}`).join(" · ") || "This scenario has no actions."}</p>`}</div>
+        ${done ? "" : `<div class="hub-apr"><button id="hub-go" ${ready ? "" : "disabled"}>Approve operational plan</button><small>${ready ? `Runs ${plural(acts.length, "action")} as one step. Nothing is partly applied.` : "Unlocks once every stage that needs action has been reviewed and every check is ready."}</small></div>`}</div>`;
+    box.querySelector(".hub-ar").onclick = (e) => {
+      const g = e.target.closest("[data-back]");
+      if (g) { const x = areas.find((y) => y.a === g.dataset.back); S.hubBack = { fid: id, href: x.href, keys: [x.key] }; return; }
+      const b = e.target.closest(".hub-rvbtn"); if (b) open(b.dataset.a, true);
+    };
+    const go = $("#hub-go");
+    if (go) go.onclick = () => ready && decide(id, s.title, acts, (r) => {
+      if (r?.status !== "APPROVED") return;
+      (S.hubApproved ||= {})[id] = { id: `C${r.id}` };
+      need.forEach((x) => delete hubSeen[x.key]); saveSeen();
+      poll();
+    });
   };
-  draw();
+  const open = (a, toggle) => {
+    const x = areas.find((y) => y.a === a); if (!x) return;
+    openA = toggle && openA === a ? null : a;
+    if (openA && x.items.length) { hubSeen[x.key] = Date.now(); saveSeen(); }
+    draw(); $(`#hub-a-${a}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
+  // Decisions made on any other page (crew swaps, sign-offs, rebookings, approval queue) show up here within a few seconds.
+  const poll = async () => {
+    if (!box.isConnected) return clearInterval(S.hubTimer);
+    try { decs = (await api(`/api/hub/${id}`)).decisions; known ||= new Set(decs.filter((x) => new Date(x.ts.replace(" ", "T")) < hubStart).map((x) => x.id)); draw(); } catch { /* keep the last view */ }
+  };
+  clearInterval(S.hubTimer); S.hubTimer = setInterval(poll, 8000);
+  draw(); poll();
+  return open;
 }
 
 // ---------- shell ----------
@@ -460,7 +582,7 @@ $("#menuBtn").onclick = () => menu(!document.body.classList.contains("menu-open"
 $("#scrim").onclick = () => menu(false);
 $("#sidebar").onclick = (e) => { const k = e.target.closest("[data-sec]")?.dataset.sec; if (k) { menu(false); location.hash = `#/tab/${k}`; } };
 const drawMenu = () => ($("#sidebar nav").innerHTML = SECTIONS.map(([k, l, g], i) =>
-  `${g !== SECTIONS[i - 1]?.[2] ? `<div class="nav-group">${g}</div>` : ""}<button data-sec="${k}" class="${S.tab === k && !location.hash.match(/flight|lab/) ? "on" : ""}">${l}</button>`).join(""));
+  `${g !== SECTIONS[i - 1]?.[2] ? `<div class="nav-group">${g}</div>` : ""}<button data-sec="${k}" class="${S.tab === k && !location.hash.match(/flight/) ? "on" : ""}">${l}</button>`).join(""));
 document.addEventListener("keydown", (e) => e.key === "Escape" && menu(false));
 $("#reset").onclick = async () => { if (confirm("Reset the whole demo dataset?")) { await api("/api/reset", {}); S.tab = "map"; location.hash = "#/"; route(); } };
 async function route() {
@@ -469,7 +591,14 @@ async function route() {
   DecisionLog.stopPlayback(); // a live demo call in the Decision log stops (and its transcript drawer closes) when you leave it
   globe?._destructor(); globe = null; // stop the globe's render loop when leaving the map
   if (view === "tab" && SECTIONS.some(([k]) => k === id)) S.tab = id;
-  try { view === "flight" ? await reportView(id) : view === "lab" ? await labView(id) : await mainView(); } catch (e) { toast(e.message, "bad"); }
+  if (view === "lab") { S.flight = id || S.flight; S.tab = "hub"; S.hubBack = null; } // old hub links open the Decision hub tab
+  if (S.tab !== "hub") clearInterval(S.hubTimer);
+  try { view === "flight" ? await reportView(id) : await mainView(); } catch (e) { toast(e.message, "bad"); }
+  // a page opened from a hub stage counts as reviewing that stage; offer the way back
+  if (S.hubBack && location.hash === S.hubBack.href) {
+    S.hubBack.keys.forEach((k) => (hubSeen[k] = Date.now())); saveSeen();
+    $("#view").insertAdjacentHTML("afterbegin", `<a class="hub-back" href="#/lab/${h(S.hubBack.fid)}">← Back to Decision hub · ${h(S.hubBack.fid)}</a>`);
+  }
   refreshBell();
   drawMenu();
   globeScroll();

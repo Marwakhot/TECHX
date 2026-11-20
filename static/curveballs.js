@@ -39,9 +39,7 @@ const Curveballs = (() => {
     const run = d.run, open = d.handoffs.filter((x) => x.status === "OPEN");
     el.innerHTML = `<h3>Batched rebooking · vulnerable first ${MARK("U-4.1")}</h3>
       <p class="small muted">Vulnerable passengers of ${h(d.flight.id)} are rebooked first, in their own transaction. Everyone else follows in batches of ${d.limits.BATCH_SIZE}. Each batch commits or rolls back on its own, so a failure never undoes an earlier batch. A failed batch is retried once, then handed to the controller.</p>
-      <div class="row"><label class="tog chaos"><input id="cb-on" type="checkbox"> inject seat conflict in batch</label><input id="cb-cb" type="number" min="1" max="20" value="3" style="width:70px">
-        <label class="tog"><input id="cb-rep" type="checkbox"> also on the retry</label>
-        <button id="cb-run">Run batched rebooking (${d.at_risk} at risk)</button></div>
+      <div class="row"><button id="cb-run">Run batched rebooking (${d.at_risk} at risk)</button></div>
       ${run ? `<p class="small">Last run: <b>${run.summary.committed}/${run.summary.batches}</b> batches committed (${run.summary.retried} on retry) · ${run.summary.handed_off} handed to controller · ${run.summary.moved} moved · ${run.summary.no_seat} with no seat</p>
       <table><tr><th>#</th><th>Batch</th><th>Status</th><th>Tries</th><th>Moved</th><th>What happened</th></tr>${run.batches.map((b) =>
         `<tr><td>${b.batch_no}</td><td>${h(b.label)}</td><td>${stTag(b.status)}</td><td>${b.attempts}</td><td>${b.moved}</td><td class="small">${h(b.error) || "—"}</td></tr>`).join("")}</table>` : ""}
@@ -49,8 +47,7 @@ const Curveballs = (() => {
         `<tr><td>${x.batch_no}</td><td class="small">${h(ids(json(x.pax_ids)))}</td><td class="small">${h(x.reason)}</td><td>${stTag(x.status)}</td>
          <td>${x.status === "OPEN" ? `<button class="ghost" data-ho="${x.id}">Re-run</button>` : h(x.resolved_by || "")}</td></tr>`).join("")}</table>` : ""}`;
     q("#cb-run", el).onclick = () => askAuth("Controller approval: batched rebooking", async (a) => {
-      const r = await api("/api/cb/batch-rebook", { flight_id: S.flight, chaos_batch: q("#cb-on", el).checked ? q("#cb-cb", el).value : null,
-        chaos_repeat: q("#cb-rep", el).checked, ...a });
+      const r = await api("/api/cb/batch-rebook", { flight_id: S.flight, ...a });
       toast(`${r.summary.committed}/${r.summary.batches} batches committed · ${r.summary.moved} moved · ${r.summary.handed_off} handed off · ` +
         `${r.integrity.double_bookings} double bookings, ${r.integrity.orphan_bags} orphaned bags`, r.summary.handed_off ? "warn" : "ok");
       await refresh();
