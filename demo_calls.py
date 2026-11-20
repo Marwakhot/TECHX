@@ -25,7 +25,19 @@ DEMO_CALLS = [
         ("Capt. Yusuf Khan", "Captain EK812", "Copy. Also, hydraulic system B pressure fluctuated on descent again. It's written up in the tech log."),
         (*CONTROLLER, "Thanks, Captain. Maintenance will put a licensed engineer on it before any release."),
     ]},
-    {"id": "mx", "title": "Hydraulic inspection sign-off", "preload": False, "lines": [
+    # AZ410 live demo: played in the Decision log once the recovery plan is approved and M-6 is signed off. Customer Recovery's
+    # 40-min hold breaks the 30-min onward-hold cap (the guards must BLOCK it live, while the call is still running); the release
+    # decided at the end is legal by then and goes to the controller approval queue.
+    {"id": "az410", "flight": "AZ410", "title": "AZ411 departure call", "preload": False, "lines": [
+        (*CONTROLLER, "AZ411 departure call. Crew control, customer recovery, maintenance, where are we?"),
+        ("Tom Larsen", "Crew Control", "The reserve captain and first officer are at the aircraft. The original AZ410 captain and first officer are released to rest."),
+        ("Priya Haddad", "Customer Recovery", "The Vienna passengers are unhappy with the evening flight. Let's hold LH1500 for forty minutes so they keep their original flight."),
+        (*CONTROLLER, "No. Forty minutes is over the hold cap, and they are already rebooked on LH1504 with their bags."),
+        ("Elena Novak", "Maintenance Control", "The weather radar item M-6 is signed off by the certifying engineer. The aircraft is serviceable."),
+        (*CONTROLLER, "Decision: release AZ411 for departure."),
+        ("Priya Haddad", "Customer Recovery", "The rebooked passengers will have their new boarding passes by {+15}."),
+    ]},
+    {"id": "mx", "flight": "EK812", "title": "Hydraulic inspection sign-off", "preload": False, "lines": [
         (*CONTROLLER, "Maintenance, what's the status of the EK812 hydraulic item?"),
         ("Elena Novak", "Maintenance Control", "Item M-1, hydraulic system B pressure fluctuation, is still open. It's a NO-GO item and needs a licensed engineer sign-off."),
         ("Elena Novak", "Maintenance Control", "I'm assigning engineer E1, K. Weber, to M-1."),

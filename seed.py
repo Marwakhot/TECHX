@@ -104,6 +104,22 @@ EK812_CALLS = [
     ("T-20", "Transfer desk", "45 tight connections off EK812, two unaccompanied minors for London and three wheelchair passengers. "
                               "LH900 to Heathrow is already boarding."),
     ("T-10", "Ramp control", "EK812 is going onto remote stand R4, no jet bridge. Ambulift is 25 minutes out, that's a problem for the PRMs.")]
+# AZ410 (Rome -> Frankfurt): the live-demo flight. ON TIME at the start, so the agents recommend nothing. Its problems are
+# latent and only appear once a delay is stated on a call (~45+ min), so the agents have something to solve in all three areas:
+#  - crew:  the captain and first officer have already flown today (25 / 30 min of duty left); a late inbound pushes AZ411 back
+#  - pax:   connections to Barcelona (holdable), Vienna and Athens (too late to hold: rebook) incl. protected-care passengers
+#  - mx:    a NO-GO weather-radar item from the tech log with a 70-min inspection that fits on schedule but not after a delay
+# Built AFTER the rest with its own random generator, so every other flight's data stays exactly the same.
+DEMO = {"id": "AZ410", "origin": "FCO", "lat": 41.80, "lon": 12.25, "arr": 60, "block": 115, "km": 960, "type": "A320",
+        "tail": "EI-DTB", "out": "AZ411", "dep": 180, "gate": "C10", "mx_minutes": 70,
+        "duty": [430, 425, 0, 0, 0, 0],  # CPT, FO already on duty; cabin crew report fresh
+        "standby": [("SB-A320-7", "CPT", "A320", "STANDBY", 0, "Crew room T2", 18), ("SB-A320-8", "FO", "A320", "STANDBY", 0, "Crew room T1", 9)],
+        "mx": ("M-6", "EI-DTB", "Weather radar intermittent (tech log)", "NO-GO", "OPEN"),
+        "pax": [("LH1830", ["PRM", "STANDARD", "STANDARD", "STANDARD"]), ("LH1500", ["UM", "STANDARD", "STANDARD"]),
+                ("LH1282", ["ELDERLY", "STANDARD", "STANDARD"]), ("LH760", ["STANDARD"] * 8)],
+        "calls": [("T-20", "Captain AZ410", "OCC, AZ410 from Rome, on schedule. The weather radar went intermittent in cruise. It's in the "
+                                            "tech log as a NO-GO for the next sector, engineering must clear it before AZ411."),
+                  ("T-15", "Dispatch AZ410", "AZ410 from FCO on schedule, no delay reported.")]}
 FIRST = "Aisha Omar Lena Jonas Priya Diego Mei Noah Sara Yusuf Elena Tom Fatima Luca Hana Ivan".split()
 LAST = "Khan Muller Rossi Garcia Chen Patel Novak Silva Haddad Becker Kim Okafor Larsen Dubois".split()
 
@@ -192,6 +208,7 @@ def build(path=None):
     con.executemany("INSERT INTO maintenance VALUES (?,?,?,?,?,NULL,NULL)", MAINTENANCE)
     con.executemany("INSERT INTO gates VALUES (?,?,?)", GATES)
     con.executemany("INSERT INTO comms(flight_id, at, speaker, text) VALUES ('EK812',?,?,?)", EK812_CALLS)
+    _demo_flight(con, seat)
     con.execute("INSERT INTO meta VALUES ('seeded_at', ?)", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
     # Decision Ledger: calls that already ended before the demo starts (transcripts only; the LLM extracts them on first view)
     for call in (c for c in DEMO_CALLS if c["preload"]):
@@ -207,6 +224,35 @@ def build(path=None):
     con.close()
 
 
+def _demo_flight(con, seat):
+    """AZ410, the live-demo flight (see DEMO). Same tables and rules as every other flight; nothing about it is special-cased
+    anywhere else in the code."""
+    D, rng = DEMO, random.Random(410)
+    name = lambda: f"{rng.choice(FIRST)} {rng.choice(LAST)}"  # noqa: E731
+    con.execute("INSERT INTO flights VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (D["id"], "INBOUND", D["origin"], "FRA", D["lat"], D["lon"], D["arr"], 0, D["block"], D["km"], D["type"], D["tail"], None,
+                 D["out"], "ENROUTE"))
+    con.execute("INSERT INTO flights VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (D["out"], "OUTBOUND", "FRA", D["origin"], None, None, D["dep"], 0, D["block"], D["km"], D["type"], D["tail"], D["gate"], None, "SCHEDULED"))
+    con.executemany("INSERT INTO tasks VALUES (?,?,?,?,?,?)",
+                    [(D["id"], tk[0], tk[1], D["mx_minutes"] if tk[0] == "MX_CHECK" else tk[2], tk[3], "PENDING") for tk in TASKS])
+    for j, (role, used) in enumerate(zip(ROLES, D["duty"])):
+        con.execute("INSERT INTO crew VALUES (?,?,?,?,?,?,?,?,?)", (f"{D['id']}-{j + 1}", name(), role, D["type"], "ON_DUTY", D["id"], used, f"On {D['id']}", 0))
+    con.executemany("INSERT INTO crew VALUES (?,?,?,?,?,NULL,?,?,?)", [(s[0], name(), *s[1:]) for s in D["standby"]])
+    con.execute("INSERT INTO maintenance VALUES (?,?,?,?,?,NULL,NULL)", D["mx"])
+    con.executemany("INSERT INTO comms(flight_id, at, speaker, text) VALUES (?,?,?,?)", [(D["id"], *c) for c in D["calls"]])
+    dest = {f[0]: f[1] for f in ONWARD}
+    k = 0
+    for onward, tiers in D["pax"]:
+        for tier in tiers:
+            k += 1
+            pid = f"P9{k:03d}"
+            con.execute("INSERT INTO passengers VALUES (?,?,?,?,?,?)", (pid, name(), tier, D["id"], onward, dest[onward]))
+            con.execute("INSERT INTO seats VALUES (?,?,?)", (onward, seat(onward), pid))
+            for b in range(rng.choice([0, 1, 1, 2])):
+                con.execute("INSERT INTO bags(id, pax_id, flight_id) VALUES (?,?,?)", (f"B9{k:03d}{b}", pid, onward))
+
+
 if __name__ == "__main__":
     build()
-    print("Built aviant.sqlite: 11 inbound flights; EK812 +75 min with 280 connecting pax, 45 at risk")
+    print("Built aviant.sqlite: 12 inbound flights; EK812 +75 min with 280 connecting pax, 45 at risk; AZ410 on time (live-demo flight)")

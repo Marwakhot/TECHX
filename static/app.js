@@ -60,10 +60,14 @@ function modal(title, fields, onOk, onCancel) {
 const askAuth = (title, onOk, onCancel) => modal(title, [["controller", "Operations Controller name", "text", S.auth.controller],
   ["pin", "Controller PIN", "password", S.auth.pin]], async (v) => { S.auth = v; await onOk(v); }, onCancel);
 
+// the page a decision is taken on, kept with the controller's name so the Decision log shows where each decision came from
+const ORIGIN = { hub: "Decision hub", crew: "Crew page", pax: "Passengers page", mx: "Maintenance page", log: "Decision log" };
+const originNow = () => (location.hash.startsWith("#/flight/") ? "Live report" : ORIGIN[S.tab] || "Console");
 function decide(fid, title, actions, after, chaos = false) {
+  const origin = originNow();
   askAuth(`Controller approval: ${h(title)}<div class="small muted" style="margin-top:6px">${actionsText(actions)}</div>` +
     (chaos ? '<p class="bad small">Chaos on: a competing booking grabs a seat mid-batch</p>' : ""),
-  async (a) => { const r = await api("/api/decide", { flight_id: fid, title, actions, chaos, ...a }); resultToast(r); after(r); refreshBell(); },
+  async (a) => { const r = await api("/api/decide", { flight_id: fid, title, actions, chaos, origin, ...a }); resultToast(r); after(r); refreshBell(); },
   () => after(null));
 }
 
@@ -212,13 +216,15 @@ async function pickerTab(render) {
     `<option value="${h(f.id)}" ${f.id === S.flight ? "selected" : ""}>${h(f.id)} ${h(f.origin)}→FRA ${f.delay_min ? "+" + f.delay_min + " min" : ""}</option>`).join("")}
     </select></label><a href="#/flight/${h(S.flight)}">Open live report →</a></div><div class="card" id="sub"></div>`;
   $("#pick").onchange = (e) => { S.flight = e.target.value; mainView(); };
-  render(d, $("#sub"));
+  await render(d, $("#sub"));
 }
 
-// Crew: duty-time bars against the legal ceiling, grouped by role, with the nearest guard-approved standby suggested per member.
+// Crew: duty-time bars against the legal ceiling, grouped by role, with the Crew agent's standby pick per member
+// (specialists.py: chosen from guard-approved standby only; the reason is the suggestion's tooltip).
 // Display only: swaps still go through decide() (controller name + PIN), and the dropdowns list only guard-approved standby.
 const CREW_F = { f: "all" };
-const crewTab = () => pickerTab((d, el) => {
+const crewTab = () => { const agentP = api(`/api/agents/${S.flight}/crew`).catch(() => null); return pickerTab(async (d, el) => {
+  const ag = await agentP;
   const MAX = d.limits.MAX_FDP_MIN, o = d.outbound, crew = d.crew;
   const st = (c) => (c.margin < 0 ? "over" : c.margin < 60 ? "tight" : "ok");
   // standby already used in a pending swap (so the same person is not proposed twice)
@@ -235,9 +241,12 @@ const crewTab = () => pickerTab((d, el) => {
   const bar = (c) => `<div class="cw-bar" role="img" aria-label="${h(c.name)}: ${c.duty_used} min used, ${c.projected_fdp} min projected, limit ${MAX} min">
       <i class="used" style="width:${pc(Math.min(c.duty_used, MAX))}"></i><i class="proj" style="left:${pc(Math.min(c.duty_used, MAX))};width:${pc(Math.max(0, Math.min(c.projected_fdp, MAX) - Math.min(c.duty_used, MAX)))}"></i>
       ${c.projected_fdp > MAX ? `<i class="over" style="left:${pc(MAX)};width:${pc(c.projected_fdp - MAX)}"></i>` : ""}<b class="lim" style="left:${pc(MAX)}"></b></div>`;
-  // each standby is suggested to at most one person, most over-limit first (the dropdown still lists every legal option)
+  // the Crew agent's pick per member (each standby at most once); if the agent is unreachable, the same rule it falls back
+  // to: most over-limit first, closest legal standby (the dropdown still lists every legal option)
   const sug = new Map(), given = new Set(busy);
-  [...crew].sort((x, y) => x.margin - y.margin).forEach((c) => { const s = c.options.find((o) => !given.has(o.id)); if (s) { sug.set(c.id, s); given.add(s.id); } });
+  if (ag && ag.flight_id === d.flight.id) ag.picks.forEach((p) => { const c = crew.find((x) => x.id === p.crew_id), s = c?.options.find((o) => o.id === p.standby_id);
+    if (s && !given.has(s.id)) { sug.set(c.id, { ...s, reason: p.reason }); given.add(s.id); } });
+  else [...crew].sort((x, y) => x.margin - y.margin).forEach((c) => { const s = c.options.find((o) => !given.has(o.id)); if (s) { sug.set(c.id, s); given.add(s.id); } });
   const best = (c) => sug.get(c.id);
   const row = (c) => {
     const b = best(c), k = st(c);
@@ -246,14 +255,20 @@ const crewTab = () => pickerTab((d, el) => {
         <div><b>${h(c.name)}</b><small>${h(c.id)} · ${h(c.role)} · ${h(c.type_rating)}</small></div></div>
       <div class="cw-time">${bar(c)}<small>${c.duty_used} min used · ${c.projected_fdp} min projected at departure</small></div>
       <div class="cw-m ${k}"><b>${c.margin > 0 ? "+" : ""}${c.margin} min</b><small>${{ over: "over limit", tight: "tight", ok: "legal" }[k]}</small></div>
-      <div class="cw-act">${k === "over" ? (b ? `<div class="cw-sug"><small>Suggested standby</small><b>${h(b.id)} · ${h(b.name)}</b><small>${h(b.location)} · ${b.walk_min} min walk</small>
-          <button data-swap="${h(c.id)}|${h(b.id)}">Propose swap</button></div>` : `<p class="small bad">${c.options.length ? "Matching standby already suggested for a more urgent crew member" : "No legal standby available"}</p>`) : ""}
+      <div class="cw-act">${k === "over" ? (b ? `<div class="cw-sug"${b.reason ? ` title="${h(`${ag.name}: ${b.reason}`)}"` : ""}><small>Suggested standby</small><b>${h(b.id)} · ${h(b.name)}</b><small>${h(b.location)} · ${b.walk_min} min walk</small>
+          <button data-swap="${h(c.id)}|${h(b.id)}">Propose swap</button></div>` : `<p class="small ${ag?.delayed === false ? "muted" : "bad"}">${ag?.delayed === false ? "On time: no agent recommendation (choose manually below)"
+          : c.options.length ? "Matching standby already suggested for a more urgent crew member" : "No legal standby available"}</p>`) : ""}
         <select data-crew="${h(c.id)}" aria-label="Choose standby for ${h(c.name)}"><option value="">${c.options.length ? (k === "over" ? "or choose another…" : "Swap with standby…") : "no legal standby"}</option>${c.options.map((s) =>
           `<option value="${h(s.id)}" ${busy.has(s.id) ? "disabled" : ""}>${h(s.id)} · ${h(s.name)} · ${h(s.location)} (${s.walk_min} min)${busy.has(s.id) ? " · already proposed" : ""}</option>`).join("")}</select></div></div>`;
   };
   const vis = crew.filter((c) => CREW_F.f === "all" || st(c) === CREW_F.f);
   const deck = vis.filter((c) => /^(CPT|FO|SO|CAP|CAPT)/i.test(c.role)), cabin = vis.filter((c) => !deck.includes(c));
   const group = (t, list) => list.length ? `<section class="cw-group"><div class="cw-gh"><h3>${t}</h3><span class="small muted">${list.filter((c) => c.margin < 0).length} of ${list.length} over limit</span></div>${list.map(row).join("")}</section>` : "";
+  // what the Crew agent did (AgentPanel, agentlive.js)
+  const agentSec = AgentPanel.html("crew", ag && ag.flight_id === d.flight.id ? ag : null, (ag?.picks || []).map((p) => {
+    const c = crew.find((x) => x.id === p.crew_id), s = c?.options.find((o) => o.id === p.standby_id);
+    return { who: `${c ? c.name : p.crew_id} (${p.role}, ${p.margin_min > 0 ? "+" : ""}${p.margin_min} min)`, what: `standby ${p.standby_id}${s ? ` · ${s.name}` : ""}`,
+      why: p.reason, by: p.by }; }), 0, "All crew are within duty limits: no swap needed.");
   el.className = "cw";
   el.innerHTML = `
     <section class="px-kpis" aria-label="Crew summary">
@@ -262,6 +277,7 @@ const crewTab = () => pickerTab((d, el) => {
       <div class="k"><span>Tightest margin</span><b class="${worst < 0 ? "bad" : ""}">${worst > 0 ? "+" : ""}${worst} min</b><small>legal ceiling ${MAX} min</small></div>
       <div class="k"><span>Standby available</span><b>${[...pool.keys()].filter((x) => !busy.has(x)).length}</b><small>${busy.size ? `${busy.size} already proposed` : "guard-approved only"}</small></div>
     </section>
+    ${agentSec}
     ${over.length && over.length === crew.length ? '<div class="px-alert" role="alert">⚠ Every crew member is over the legal limit: a full standby crew is needed for this departure.</div>' : ""}
     <div class="cw-top"><div class="cw-filter" role="group" aria-label="Filter crew">${[["all", "All", crew.length], ["over", "Over limit", over.length], ["tight", "Tight (< 60 min)", tight.length],
       ["ok", "Legal", crew.length - over.length - tight.length]].map(([k, l, n]) => `<button class="${CREW_F.f === k ? "on" : ""}" data-cf="${k}" aria-pressed="${CREW_F.f === k}">${l} <span>${n}</span></button>`).join("")}</div>
@@ -277,7 +293,7 @@ const crewTab = () => pickerTab((d, el) => {
     const b = e.target.closest("[data-swap]"); if (b) { const [cid, sid] = b.dataset.swap.split("|"); swap(cid, sid); }
   };
   el.onchange = (e) => { const s = e.target; if (s.dataset.crew && s.value) swap(s.dataset.crew, s.value, () => (s.value = "")); };
-});
+}); };
 
 // Connecting Passengers: Passenger Impact Agent (analysis + recommendation hand-off only; it never books anything)
 const paxTab = () => pickerTab((d, el) => { el.className = ""; return PaxImpact.mount(el).catch((e) => toast(e.message, "bad")); });
@@ -302,6 +318,7 @@ async function reportView(id) {
     <h2>${h(f.id)} <span class="muted">${h(f.origin)} → FRA</span> ${delayChip(f.delay_min)} ${tag(f.status)}</h2>
     <div class="row muted">${h(f.aircraft_type)} ${h(f.tail)} · outbound ${h(o.id)} → ${h(o.dest)} dep T${sign(o.eff)} · gate ${h(o.gate)} · ${h(o.status)}
       <button id="release" class="ghost">Propose departure release</button></div>
+    <div id="agent-live"></div>
     <div class="card"><div class="row between"><h3>Live situation report</h3>
       <span><span id="rsrc" class="muted small"></span> <button id="regen" class="ghost">↻ Regenerate</button></span></div><div id="report" class="report muted">Generating report…</div></div>
     <div class="stats">${stats.map(([t, v, s, bad]) => `<div class="stat ${bad ? "alert" : ""}"><div class="muted small">${h(t)}</div><div class="big">${h(v)}</div><div class="small">${h(s)}</div></div>`).join("")}</div>
@@ -317,9 +334,21 @@ async function reportView(id) {
       '<p class="muted small">No decisions yet</p>'}${notifList(d.notifications.slice(0, 8))}</div></div>`;
   $("#regen").onclick = () => loadReport(id, true);
   $("#release").onclick = () => decide(id, `Release ${o.id} for departure`, [{ kind: "DEPARTURE_RELEASE", flight_id: o.id }], (r) => r && reportView(id));
+  AgentLive.mount($("#agent-live"), id); // live agent activity after a call is saved (agentlive.js)
+  // Saving a call starts the agents at once; the strip follows them, then the report, stats and scenarios reload.
   $("#save").onclick = async () => {
-    try { await api("/api/comms", { flight_id: id, speaker: $("#spk").value, text: $("#txt").value }); toast("Transcript saved, report updating"); reportView(id); }
-    catch (e) { toast(e.message, "bad"); } };
+    const speaker = $("#spk").value.trim(), text = $("#txt").value.trim();
+    $("#save").disabled = true;
+    try {
+      const r = await api("/api/comms", { flight_id: id, speaker, text });
+      toast("Call saved · agents responding");
+      $("#txt").value = "";
+      const now = new Date().toTimeString().slice(0, 5);
+      $("#save").nextElementSibling.insertAdjacentHTML("afterbegin", `<li><b>${h(now)} · ${h(speaker || "OCC call")}</b><br>${h(text)}</li>`);
+      AgentLive.start(id, r, () => { if (location.hash === `#/flight/${id}`) reportView(id); }, { enroute: f.status === "ENROUTE", text, speaker });
+    } catch (e) { toast(e.message, "bad"); }
+    if ($("#save")) $("#save").disabled = false;
+  };
   $("#mic").onclick = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return toast("Live transcription isn't supported in this browser (use Chrome/Edge) — type the call instead", "warn");
@@ -341,10 +370,12 @@ async function loadReport(id, force) {
     if (!$("#report") || S.flight !== id) return;
     $("#report").innerHTML = bullets(r.report); $("#report").classList.remove("muted");
     const ai = String(r.source || "").startsWith("LLM"), sAi = String(r.suggestions_source || r.source || "").startsWith("LLM");
-    $("#rsrc").textContent = `${ai ? "AI" : "Rule-based fallback (AI unavailable)"}${ai && !sAi ? " · options rule-based" : ""} · ${String(r.generated || "").slice(11, 16)}`;
-    $("#rsrc").title = `Report: ${r.source} · Options: ${r.suggestions_source || r.source} · ${r.generated} · from call transcripts + live data`;
+    $("#rsrc").textContent = `${r.on_time ? "On time · no recommendations" : ai ? "AI" : "Rule-based fallback (AI unavailable)"}${ai && !sAi ? " · options rule-based" : ""} · ${String(r.generated || "").slice(11, 16)}`;
+    $("#rsrc").title = `Report: ${r.source} · Options: ${r.suggestions_source || r.source} · ${r.generated} · from call transcripts + live data` +
+      Object.values(r.agents || {}).map((a) => `\n${a.name}: ${a.source}`).join("");
     $("#sugg").innerHTML = r.suggestions.map((s, i) => `<div class="sugg x-pick" data-opt="${i}"><div class="muted small">Option ${i + 1}</div><b>${h(s.title)}</b>
-      <p class="small clamp2" title="${h(s.why)}">${h(s.why)}</p><div class="small">${actionsText(s.actions)}</div>${s.revised_from ? `<div class="small warn" title="${h(shortIds(s.revised_from))}">↻ Revised after a guard refusal</div>` : ""}</div>`).join("");
+      <p class="small clamp2" title="${h(s.why)}">${h(s.why)}</p><div class="small">${actionsText(s.actions)}</div>${s.revised_from ? `<div class="small warn" title="${h(shortIds(s.revised_from))}">↻ Revised after a guard refusal</div>` : ""}</div>`).join("")
+      || `<p class="muted">${h(id)} is on time: the agents only recommend when a flight is delayed.</p>`;
     $("#sugg").onclick = (e) => { const c = e.target.closest("[data-opt]"); if (!c || !r.suggestions[c.dataset.opt].actions.length) return;
       document.querySelectorAll("#sugg .x-sel").forEach((x) => x.classList.remove("x-sel")); c.classList.add("x-sel");
       Extras.paxPanel($("#x-pax"), id, r.suggestions[c.dataset.opt]); };
@@ -370,8 +401,9 @@ function hubChecks(s, id) {
   const crewBad = k.crew_illegal > 0 || k.crew_min_margin < 0;
   c.push(["crew", "Crew", !crewBad, crewBad ? `${k.crew_illegal || 1} crew member${k.crew_illegal > 1 ? "s" : ""} would exceed the duty limit.` : `Duty time is within limits (${k.crew_min_margin} min margin).`, "Affected: crew duty time. Assign standby crew.", ["#/tab/crew", "Crew tab"]]);
   c.push(["mx", "Maintenance", !k.open_nogo, k.open_nogo ? `${k.open_nogo} NO-GO item${k.open_nogo > 1 ? "s" : ""} still unsigned.` : "Aircraft is cleared.", "Affected: open NO-GO items. A licensed engineer must sign them off.", ["#/tab/mx", "Maintenance tab"]]);
-  const net = k.network_delay_added > 30;
-  c.push(["net", "Downstream network", !net, k.network_delay_added ? `Adds ${k.network_delay_added} min of delay to onward flights.` : "No onward flights are affected.", `Affected: ${k.network_delay_added} min of onward delay. Pick a plan with a shorter hold.`, null]);
+  // holds on other passengers' onward flights (the outbound's own retime is the turnaround, not a knock-on delay)
+  const od = k.onward_delay_added ?? k.network_delay_added, net = od > 30;
+  c.push(["net", "Downstream network", !net, od ? `Adds ${od} min of delay to onward flights.` : "No onward flights are affected.", `Affected: ${od} min of onward delay. Pick a plan with a shorter hold.`, null]);
   return c;
 }
 // The hub is its own menu tab (#/tab/hub). #/lab/<flight> still works: it opens the hub tab for that flight.
@@ -399,6 +431,7 @@ async function loadLab(id, regenerate = false) {
     const [c, d] = await Promise.all([api("/api/compare", { flight_id: id, priorities: S.prio, regenerate, narrate: false }), api(`/api/flight/${id}`)]);
     const rows = c.rows.slice(0, 3), used = hubOn(c.priorities);
     $("#lsrc").textContent = `Source: ${c.scenario_source}`;
+    if (c.on_time) { $("#hub-note").innerHTML = ""; $("#scen").innerHTML = `<p class="muted">${h(id)} is on time: the agents only recommend recovery scenarios when a flight is delayed.</p>`; return; }
     $("#hub-note").innerHTML = `Scenarios built to protect: ${used.length ? used.map((k) => HUB_P.find(([p]) => p === k)[1].toLowerCase()).join(", ") : "the agent's default balance"}`;
     const draw = () => {
       const pick = S.hubPick, s = rows[pick], L = "ABC";

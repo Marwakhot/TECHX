@@ -1,5 +1,7 @@
 """Full live backend check over HTTP, with the REAL LLM (OPENROUTER_API_KEY from .env; costs a few cents at most).
-Starts its own server on a throwaway database, so the demo database is untouched.     Usage: python full_check.py
+Starts its own server on a throwaway database, so the demo database is untouched.
+Usage: python full_check.py          (everything, ~6 min)
+       python full_check.py agents   (section 7 only: the three agents + orchestrator on AZ410, ~1.5 min)
 
 It checks three things a judge would look at:
   1. Everything shown as AI really came from the LLM (source labels say "LLM · <model>"; no silent hard-coded fallback).
@@ -7,6 +9,7 @@ It checks three things a judge would look at:
   3. The U-4 curveballs behave exactly as the brief's live tests say, and the existing features still work afterwards.
 """
 import json
+import re
 import os
 import socket
 import subprocess
@@ -50,7 +53,7 @@ def check(section, name, cond, detail=""):
     OK["pass" if cond else "fail"] += 1
     if not cond:
         FAILS.append(f"[{section}] {name} {detail}")
-    print(f"  {'PASS' if cond else 'FAIL'}  {name}" + (f"  ({str(detail)[:160]})" if detail else ""), flush=True)
+    print(f"  {'PASS' if cond else 'FAIL'}  {name}" + (f"  ({str(detail)[:160 if cond else 1500]})" if detail else ""), flush=True)
 
 
 def auth(**b):
@@ -75,7 +78,7 @@ def main():
                     break
             except requests.RequestException:
                 time.sleep(0.5)
-        run()
+        agents() if "agents" in sys.argv[1:] else run()  # python full_check.py agents: section 7 only
     finally:
         srv.terminate()
         srv.wait(10)
@@ -93,7 +96,7 @@ def run():
     c, llm = get("/api/llm")
     check(S, "LLM key configured on the server", c == 200 and llm["key_configured"], llm.get("model"))
     c, flights = get("/api/flights")
-    check(S, "network: 11 inbound flights", c == 200 and len(flights) == 11)
+    check(S, "network: 12 inbound flights", c == 200 and len(flights) == 12)
     c, f = get("/api/flight/EK812")
     check(S, "EK812 state: 45 at risk, 12 vulnerable, crew illegal, 1 NO-GO", c == 200 and f["kpis"]["at_risk"] == 45
           and f["kpis"]["vulnerable_at_risk"] == 12 and f["kpis"]["crew_illegal"] > 0 and f["kpis"]["open_nogo"] == 1)
@@ -251,6 +254,142 @@ def run():
     c, x = post("/api/reset", {})
     c, v = get("/api/cb/EK812")
     check(S, "reset rebuilds curveball tables", c == 200 and len(v["roster"]) == 3 and not v["crew_messages"])
+    agents()
+
+
+KPIS = ("at_risk", "vulnerable_at_risk", "bags_rush", "bags_short_connection", "crew_illegal", "crew_min_margin", "open_nogo", "onward_delay_added")
+FIELD = re.compile(r"\b[a-z]+_[a-z_]+\b")  # snake_case field names must never reach a controller-facing reason
+
+
+def plain(texts):
+    return [t for t in texts if FIELD.search(t or "")]
+
+
+def agents():
+    """7. The three specialist agents + orchestrator on AZ410, exactly as the presenter runs it (see test_demo_flow.py)."""
+    S, FID = "agents", "AZ410"
+    print("\n== 7. Agentic flow on AZ410: call -> agents -> pages -> fix -> hub -> decision log -> replay -> guards ==")
+    post("/api/reset", {})
+    c, flights = get("/api/flights")
+    on_time = [f["id"] for f in flights if f["delay_min"] == 0]
+    check(S, "AZ410 starts on time", FID in on_time, on_time)
+    for fid in on_time:  # no delay -> no recommendations anywhere, and the status report still comes from the LLM
+        c, rep = get(f"/api/report/{fid}")
+        c2, cr = get(f"/api/agents/{fid}/crew")
+        check(S, f"{fid} on time: no recommendations, report by the LLM", rep.get("on_time") and rep["suggestions"] == [] and cr["picks"] == []
+              and is_llm(rep["source"]) and fid in rep["report"], rep.get("source"))
+
+    c, r = post("/api/comms", {"flight_id": FID, "speaker": "Dispatch AZ410", "text": "AZ410 now estimating 60 minutes late, ATC holding over the Alps."})
+    check(S, "delay call saved on the live report starts an agent run", c == 200 and r.get("run"), r)
+    t0, v = time.time(), {}
+    while time.time() - t0 < 240:
+        c, v = get(f"/api/agent/live/{FID}/{r['since']}")
+        if v.get("run") == r["run"] and v.get("status") == "done":
+            break
+        time.sleep(1)
+    kinds = [e["kind"] for e in v.get("events", [])]
+    check(S, "agents finished on their own", v.get("status") == "done" and not v.get("error"), f"{time.time() - t0:.0f} s, {kinds}")
+    d = next((e for e in v.get("events", []) if e["kind"] == "DELAY_FROM_CALL"), None)
+    check(S, "the LLM read the 60-min delay off the call (code checked the number is on the line)",
+          d and d["detail"]["delay_min"] == 60 and d["detail"]["read_by"] == "LLM", d and d["detail"])
+    check(S, "live strip shows every agent at work", {"REPLANNING", "CREW_AGENT", "PAX_AGENT", "MX_AGENT", "ORCHESTRATOR", "REPLANNED"} <= set(kinds), kinds)
+    c, f = get(f"/api/flight/{FID}")
+    check(S, "flight updated from the call: 60 min late", f["flight"]["delay_min"] == 60)
+
+    c, team = get(f"/api/agents/{FID}")
+    for k in ("crew", "passengers", "maintenance"):
+        a = team[k]
+        check(S, f"{a['name']}: decided by the LLM, guard dry run passed", is_llm(a["source"]) and a["llm_picks"] > 0 and a["guard"]["ok"],
+              f"{a['source']} · {a['llm_picks']}/{len(a['picks'])} LLM picks · {a['guard']}")
+        rejected = [p["llm_reason_rejected"] for p in a["picks"] if p.get("llm_reason_rejected")]
+        # the LLM writes the headline and the reasons; code shows the rules' text instead only where the LLM's text was untrue
+        check(S, f"{a['name']}: summary written by the LLM (or the LLM's untrue text replaced)", a.get("summary_by") == "LLM" or rejected, a.get("summary"))
+        reasons = [p["reason"] for p in a["picks"]] + [h["reason"] for h in a.get("holds", []) if h.get("recommended")]
+        check(S, f"{a['name']}: reasons in plain English (no field names)", not plain(reasons + [a["summary"]]), plain(reasons + [a["summary"]])[:3])
+        shown = [p.get("reason_by") for p in a["picks"] if p["by"] == "LLM"]
+        check(S, f"{a['name']}: every LLM reason either shown as written or replaced because it was untrue",
+              all(r == "LLM" or p.get("llm_reason_rejected") for r, p in zip(shown, [p for p in a["picks"] if p["by"] == "LLM"])),
+              f"{shown.count('LLM')}/{len(shown)} shown as the LLM wrote them")
+        if rejected or a.get("summary_by") != "LLM":
+            print(f"  NOTE  {a['name']}: code replaced LLM text that contradicted the facts: {rejected[:3]}")
+    crew, pax, mx = team["crew"], team["passengers"], team["maintenance"]
+    late = [p for p in mx["picks"] if p["blocks_departure"] and (p["slack"] or 0) < 0]
+    check(S, "Maintenance agent: a slipping NO-GO job is never described as on time",
+          all(re.search(r"slip|after|late|delay", p["reason"].lower()) for p in late) and (not late or re.search(r"slip|after|late|delay", mx["summary"].lower())),
+          [(p["item_id"], p["slack"], p["reason"]) for p in late] + [mx["summary"]])
+    check(S, "Crew agent: captain + first officer swapped to legal standby", {p["role"] for p in crew["picks"]} == {"CPT", "FO"}, crew["picks"])
+    check(S, "Passenger agent: a rebooking for each of the 10 missed connections", len(pax["picks"]) == 10, len(pax["picks"]))
+    check(S, "Passenger agent: an onward hold proposed within the 30-min cap", any(h["recommended"] and h["minutes"] <= 30 for h in pax["holds"]),
+          [(h["flight_id"], h["minutes"], h["recommended"]) for h in pax["holds"]])
+    check(S, "Maintenance agent: NO-GO M-6 gets an engineer", mx["actions"] and mx["actions"][0]["item_id"] == "M-6", mx["picks"])
+
+    c, rep = get(f"/api/report/{FID}")
+    check(S, "orchestrator: live report and options from the LLM", is_llm(rep["source"]) and "LLM" in rep["suggestions_source"],
+          f"{rep['source']} / {rep['suggestions_source']}")
+    check(S, "orchestrator: report grounded in the live state and the agents' work", FID in rep["report"] and len(rep["agents"]) == 3, rep["report"][:200])
+    check(S, "orchestrator: 3 distinct options", len({json.dumps(s["actions"], sort_keys=True) for s in rep["suggestions"]}) == 3,
+          [s["title"] for s in rep["suggestions"]])
+
+    c, cv = get(f"/api/agents/{FID}/crew")
+    check(S, "Crew page: agent picks + recent runs with their trigger", cv["picks"] and cv["recent"] and cv["recent"][0]["trigger"], cv["recent"][:1])
+    c, pv = get(f"/api/pax/{FID}")
+    picks = [p["agent_pick"] for p in pv["passengers"] if p.get("agent_pick")]
+    check(S, "Connecting passengers page: agent pick per passenger, panel labelled LLM", len(picks) == 10 and is_llm(pv["agent"]["source"]))
+    c, mq = get("/api/maintenance")
+    m6 = next(i for i in mq["items"] if i["id"] == "M-6")
+    check(S, "Maintenance page: agent pick on M-6, panel labelled LLM", m6.get("agent_pick") and is_llm(mq["agent"]["source"]), m6.get("agent_pick"))
+
+    # fix maintenance first (the hub refuses a plan while a NO-GO is open): assign the agent's engineer, engineer signs off
+    eng = mx["actions"][0]["engineer_id"]
+    c, r = post("/api/decide", auth(flight_id=FID, title="Assign engineer", actions=mx["actions"], origin="Maintenance"))
+    check(S, "Maintenance: agent's engineer assigned with PIN", r.get("status") == "APPROVED", r.get("reason"))
+    import seed
+    c, r = post("/api/signoff", {"item_id": "M-6", "licence": {e[0]: e[2] for e in seed.ENGINEERS}[eng]})
+    check(S, "M-6 signed off by the assigned engineer", r.get("status") == "SIGNED", r)
+
+    c, lab = post("/api/lab", {"flight_id": FID, "priorities": {"connections": True}})
+    green = lambda k: (not k["at_risk"] and not k["vulnerable_at_risk"] and not (k["bags_rush"] + k["bags_short_connection"])  # noqa: E731
+                       and not k["crew_illegal"] and k["crew_min_margin"] >= 0 and not k["open_nogo"] and k["onward_delay_added"] <= 30)
+    ready = [s for s in lab["scenarios"] if s["ok"] and green(s["kpis"])]
+    check(S, "Decision hub: re-planned after the sign-off, a scenario with all checks green", ready and "LLM" in lab["source"],
+          f"{lab['source']} · {[(s['title'], s['ok'], s.get('reason', '')[:60], s.get('use'), {k: v for k, v in (s['kpis'] or {}).items() if k in KPIS}) for s in lab['scenarios']]}")
+    if not ready:
+        return
+    c, r = post("/api/decide", auth(flight_id=FID, title=ready[0]["title"], actions=ready[0]["actions"], origin="Decision hub"))
+    check(S, "Decision hub: plan approved with PIN", r.get("status") == "APPROVED", r.get("reason"))
+    c, hub = get(f"/api/hub/{FID}")
+    plan = next((x for x in hub["decisions"] if x["title"] == ready[0]["title"]), None)
+    check(S, "Decision log lists the hub decision with origin and approver", plan and plan["source"] == "Decision hub · Judge Test", plan and plan["source"])
+
+    c, lv = get(f"/api/ledger/{FID}")
+    call = next((x for x in lv["demo_calls"] if x["id"] == "az410"), None)
+    check(S, "Decision log offers the AZ410 departure call", call is not None)
+    c, s = post("/api/ledger/call/start", {"flight_id": FID, "title": call["title"], "source": "simulated", "demo_id": "az410"})
+    for ln in call["lines"]:
+        post("/api/ledger/call/line", {"call_id": s["call_id"], "speaker": ln["speaker"], "role": ln["role"], "text": ln["text"]})
+    post("/api/ledger/call/end", {"call_id": s["call_id"]})
+    c, ex = post("/api/ledger/extract", {"call_id": s["call_id"]})
+    c, lv = get(f"/api/ledger/{FID}")
+    blocked = [i for i in lv["items"] if i["guard_status"] == "BLOCKED"]
+    check(S, "call extracted by the LLM, every item quoted from the transcript", c == 200 and is_llm(ex.get("source")) and all(i["quote"] for i in lv["items"]),
+          f"{len(lv['items'])} items")
+    check(S, "the 40-min LH1500 hold on the call is BLOCKED by the guards", any("LH1500" in json.dumps(i["actions"]) for i in blocked),
+          [(i["summary"][:60], i["guard_reason"][:60]) for i in blocked])
+    out = f["outbound"]["id"]
+    c, r = post("/api/decide", auth(flight_id=FID, title="Release", actions=[{"kind": "DEPARTURE_RELEASE", "flight_id": out}]))
+    check(S, f"{out} release now legal and APPROVED", r.get("status") == "APPROVED", r.get("reason"))
+
+    c, rp = get(f"/api/replay/{FID}")
+    mine = {x["action"] for x in rp["steps"] if x.get("flight") == FID}
+    check(S, "audit replay: whole log verified, AZ410's steps and figures", rp["verified"] and {"ETA_UPDATED", "CHANGE_APPROVED", "MAINTENANCE_SIGNED"} <= mine
+          and rp["steps"][-1]["kpis"]["outbound_status"] == "RELEASED", f"{rp['events']} events, {rp['mismatches']} mismatches")
+    c, rt = post("/api/redteam", {"flight_id": FID, "mode": "fixed"})
+    check(S, "Guard Attack Mode (fixed suite): all refused, nothing committed", rt["state_unchanged"] and rt["committed"] == 0, len(rt["attacks"]))
+    c, rt = post("/api/redteam", {"flight_id": FID})
+    check(S, "Guard Attack Mode (LLM attacks): all refused, nothing committed", "LLM" in rt["source"] and rt["state_unchanged"] and rt["committed"] == 0,
+          rt.get("ai_error") or rt["source"])
+    c, rep = post("/api/report", {"flight_id": FID})
+    check(S, "final AZ410 report by the LLM reflects the release", is_llm(rep["source"]), rep["report"][:160])
 
 
 if __name__ == "__main__":

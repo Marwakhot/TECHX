@@ -222,6 +222,11 @@ def recommend(fid, pax_ids, by, overrides=None):
         raise ValueError("Select 1-100 passengers")
     rows = {r["ref"]: r for r in analyse(fid)["passengers"]}
     overrides = overrides if isinstance(overrides, dict) else {}
+    import specialists  # local import: specialists imports this module
+    try:  # default to the Passenger agent's pick (what the page shows as the AI recommendation)
+        agent_pick = {p["pax_id"]: p["to_flight"] for p in specialists.passengers(fid)["picks"]}
+    except Exception:  # noqa: BLE001 - without it, the earliest flight passenger and bags can make
+        agent_pick = {}
     picked, skipped, taken = [], [], {}
     with closing(S.connect()) as con:  # the guard's own care-tier order (UM, PRM, MEDICAL, ...) decides who gets seats first
         tiers = {r["id"]: r["tier"] for r in S.rows(con, "SELECT id, tier FROM passengers WHERE inbound = ?", (fid,))}
@@ -238,7 +243,8 @@ def recommend(fid, pax_ids, by, overrides=None):
         # A connection is approvable only when BOTH the passenger and their bags can make it: baggage is a hard condition.
         feasible = [a for a in opts if a["bags_make_it"] or not r["bags"]]
         want = overrides.get(pid)
-        choice = next((a for a in feasible if a["flight"] == want), None) if want else (feasible[0] if feasible else None)
+        choice = (next((a for a in feasible if a["flight"] == want), None) if want else
+                  next((a for a in feasible if a["flight"] == agent_pick.get(pid)), feasible[0] if feasible else None))
         if not choice:
             skipped.append({"ref": pid, "reason": "review required: bags cannot make " + want if want and any(a["flight"] == want for a in opts)
                             else "review required: no flight that both passenger and bags can make" if opts

@@ -73,10 +73,29 @@ def _redo(con, ev, d):
         raise
 
 
+def _flight_of(action, d, changes, item_flight, pax_flight):
+    """Which flight an audit event belongs to (None = not about one flight), so the page can show one flight's events."""
+    if d.get("flight"):
+        return d["flight"]
+    if action.startswith(("STAGE_", "CHANGE_")):
+        return changes.get(d.get("id"))
+    if d.get("item"):
+        return item_flight.get(d["item"])
+    if d.get("pax"):
+        return pax_flight.get(d["pax"])
+    return None
+
+
 def run(fid="EK812"):
+    """Replay the WHOLE audit log (verification always covers every event). `fid` picks whose figures each stage shows;
+    every step also carries the flight it belongs to, so the page can show one flight's events."""
     with closing(S.connect()) as live:
+        S._inbound(live, fid)
         events = S.rows(live, "SELECT * FROM audit ORDER BY id")
         live_hash = S.state_hash(live)
+        changes = dict(live.execute("SELECT id, flight_id FROM changes").fetchall())
+        item_flight = dict(live.execute("SELECT m.id, f.id FROM maintenance m JOIN flights f ON f.tail = m.tail AND f.kind = 'INBOUND'").fetchall())
+        pax_flight = dict(live.execute("SELECT id, inbound FROM passengers").fetchall())
     fd, path = tempfile.mkstemp(suffix=".sqlite", prefix="aviant-replay-")
     os.close(fd)
     try:
@@ -84,7 +103,7 @@ def run(fid="EK812"):
         steps, mismatches = [], 0
         with closing(S.connect(path)) as con:
             initial = S.state_hash(con)
-            steps.append({"seq": 0, "ts": "", "actor": "seed", "action": "SEED", "detail": {}, "state_change": True,
+            steps.append({"seq": 0, "ts": "", "actor": "seed", "action": "SEED", "flight": None, "detail": {}, "state_change": True,
                           "hash": initial, "recorded_hash": None, "match": None, "records": [], "records_total": 0,
                           "kpis": _kp(con, fid)})
             for e in events:
@@ -103,6 +122,7 @@ def run(fid="EK812"):
                 match = None if rec is None else rec == h
                 mismatches += match is False or err is not None
                 steps.append({"seq": e["id"], "ts": e["ts"], "actor": e["actor"], "action": e["action"],
+                              "flight": _flight_of(e["action"], d, changes, item_flight, pax_flight),
                               "detail": {k: v for k, v in d.items() if k not in ("state_hash", "assignments")},
                               "state_change": change, "hash": h, "recorded_hash": rec, "match": match, "error": err,
                               "records": records, "records_total": n_records,
@@ -111,4 +131,4 @@ def run(fid="EK812"):
     finally:
         os.remove(path)
     return {"events": len(events), "steps": steps, "initial_hash": initial, "replayed_hash": final, "live_hash": live_hash,
-            "verified": final == live_hash and mismatches == 0, "mismatches": mismatches}
+            "verified": final == live_hash and mismatches == 0, "mismatches": mismatches, "flight": fid}

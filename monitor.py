@@ -7,11 +7,16 @@ Each tick (background thread on Railway / a long-running server; GET /api/agent/
                        estimate is recorded (audited as ETA_UPDATED, replayable).
   2. DETECT CHANGES  - code fingerprints each flight (delay, ETA, at-risk / vulnerable passengers, crew legality, NO-GO items,
                        turnaround gap, bags, outbound gate/status, latest call). Any difference vs the last tick is a change.
-  3. RE-PLAN         - for every disrupted flight that changed (or whose report was invalidated), the live report and the 3
-                       recovery suggestions are regenerated (LLM, dry-run through the guards, self-repaired), so they are
-                       ready before anyone opens the page.
+  3. RE-PLAN         - for every disrupted flight that changed (or whose report was invalidated), the three specialist agents
+                       (specialists.py: Crew, Passengers, Maintenance) run concurrently; each re-decides only if something in
+                       its own area changed. The orchestrator (agent.get_report) then combines their proposals into the live
+                       report and the 3 recovery scenarios (LLM, dry-run through the guards, self-repaired), so the Crew,
+                       Connecting passengers, Maintenance pages and the Decision hub are ready before anyone opens them.
   4. ALERT           - the change and the new top suggestion (with its guard result) are posted to the notification feed
                        and the agent event log. The agent NEVER executes anything: every suggestion still needs the controller PIN.
+
+A call saved on a live report (call_logged) does not wait for the next tick: it starts one at once for that flight, and the
+live report follows every step in the agent event log (live()), so the controller watches the agents respond.
 """
 import json
 import os
@@ -50,9 +55,17 @@ flights, departure retimes, crew duty times, connection times and anything not a
 {"updates":[{"line":<line index>,"flight_id":"<inbound id>","total_delay_min":<int or null>,"additional_delay_min":<int or null>,
 "reason":"short reason if stated, else null"}]}  (exactly one of the two delay fields is set). No updates -> {"updates":[]}"""
 
+# Rule-based reading of a delay estimate, used only when the LLM cannot be reached. Deliberately narrow: "60 minutes late",
+# "estimating 60 min late", "another 20 minutes". Whatever it reads still goes through the same checks as the LLM's reading.
+RULE_TOTAL = re.compile(r"\b(\d{1,3})\s*(?:min|mins|minutes)\s+(?:late|behind(?: schedule)?|delay(?:ed)?)\b", re.I)
+RULE_ADD = re.compile(r"\b(?:another|an additional|additional|a further|further|extra)\s+(\d{1,3})\s*(?:min|mins|minutes)\b", re.I)
+
 _tick_lock = threading.Lock()
 _state = {"running": False, "started": None, "last_tick": None, "last_tick_ts": 0.0, "last_duration_s": None, "ticks": 0,
           "last_error": None, "mode": None}
+_live, _live_lock = {}, threading.Lock()  # flight -> the agent run started by the latest call saved on its live report
+_scan_lock = threading.Lock()  # one call-line reader at a time (background pass and call-triggered passes)
+_flight_locks, _flight_locks_guard = {}, threading.Lock()  # one call-triggered pass per flight at a time
 
 
 def ensure_tables(con):
@@ -117,24 +130,34 @@ def apply_eta(fid, delay_min, source, reason=None, actor="Aviant agent", con=Non
             con.close()
 
 
-def _scan_calls(con, watch, flights):
-    """Read call lines logged since the last tick; let the LLM spot stated delay estimates; code verifies and records them."""
-    seen = {w["flight_id"]: w["comms_seen"] for w in watch.values()}
+def _scan_calls(con, only=None):
+    """Read call lines logged since the last scan; let the LLM spot stated delay estimates; code verifies and records them.
+    One scan at a time, and what was already read is re-read inside the lock, so a line is never applied twice (which matters
+    for "another 20 minutes"). `only`: read just that flight's new lines (a call saved on its live report)."""
+    with _scan_lock:
+        return _scan_locked(con, only)
+
+
+def _scan_locked(con, only):
+    seen = dict(con.execute("SELECT flight_id, comms_seen FROM agent_watch").fetchall())
+    if only:
+        seen = {only: seen[only]} if only in seen else {}
     max_id = con.execute("SELECT COALESCE(MAX(id), 0) FROM comms").fetchone()[0]
-    new = [c for c in S.rows(con, "SELECT * FROM comms WHERE id > ? ORDER BY id", (min(seen.values(), default=max_id),))
+    new = [c for c in S.rows(con, "SELECT * FROM comms WHERE id > ? AND id <= ? ORDER BY id", (min(seen.values(), default=max_id), max_id))
            if c["flight_id"] in seen and c["id"] > seen[c["flight_id"]]]
     updates = []
     lines = [c for c in new if DELAY_HINT.search(c["text"] or "")]
     if lines:
-        enroute = {f["id"]: f for f in flights if f["status"] == "ENROUTE"}
+        enroute = {f["id"]: f for f in S.rows(con, S.F_SQL + " WHERE f.kind = 'INBOUND' AND f.status = 'ENROUTE'")}  # current delays
         if enroute:
             payload = [{"line": i, "call_about": c["flight_id"], "speaker": c["speaker"], "text": c["text"][:600]} for i, c in enumerate(lines[:25])]
+            reader = "LLM"
             try:
                 out = agent.llm_json(ETA_SYSTEM, f"<flights>{json.dumps([{'id': f['id'], 'origin': f['origin'], 'delay_min': f['delay_min']} for f in enroute.values()])}</flights>\n"
                                                  f"<lines>{json.dumps(payload)}</lines>", max_tokens=600, temperature=0)
             except agent.LLMUnavailable as e:
-                _event(con, None, "LLM_UNAVAILABLE", f"Could not read new call lines for delay estimates: {e}")
-                out = {"updates": []}  # still advance: the lines remain in the report's transcript, nothing is invented
+                _event(con, None, "LLM_UNAVAILABLE", f"Could not reach the LLM to read new call lines ({e}); reading them with simple rules")
+                out, reader = {"updates": _rule_updates(lines[:25])}, "rules"  # narrow patterns; same checks below, nothing invented
             for u in (out.get("updates") if isinstance(out.get("updates"), list) else [])[:10]:
                 try:
                     c = lines[int(u["line"])]
@@ -149,17 +172,33 @@ def _scan_calls(con, watch, flights):
                         new_delay = enroute[fid]["delay_min"] + add
                     else:
                         continue  # the number is not literally stated on the line: never trust it
-                    r = apply_eta(fid, new_delay, f"{c['speaker']} call ({c['at']})", agent.clean(u.get("reason"), 120) or None, con=con)
+                    try:
+                        r = apply_eta(fid, new_delay, f"{c['speaker']} call ({c['at']})", agent.clean(u.get("reason"), 120) or None, con=con)
+                    except ValueError as e:  # e.g. out of range, or the flight landed meanwhile: say so instead of staying silent
+                        _event(con, fid, "DELAY_REJECTED", f"Delay on the call not recorded: {e}", {"quote": c["text"][:300], "comms_id": c["id"]})
+                        continue
                     if r["status"] == "UPDATED":
                         enroute[fid]["delay_min"] = new_delay
                         updates.append({**r, "speaker": c["speaker"], "quote": c["text"][:200]})
                         _event(con, fid, "DELAY_FROM_CALL", f"{fid} delay {r['was']:+} → {new_delay:+} min, stated by {c['speaker']}",
-                               {"quote": c["text"][:300], "comms_id": c["id"]})
+                               {"quote": c["text"][:300], "comms_id": c["id"], "was": r["was"], "delay_min": new_delay, "read_by": reader})
                 except (KeyError, IndexError, TypeError, ValueError):
                     continue
     for fid in seen:
-        con.execute("UPDATE agent_watch SET comms_seen = ? WHERE flight_id = ?", (max_id, fid))
+        con.execute("UPDATE agent_watch SET comms_seen = MAX(comms_seen, ?) WHERE flight_id = ?", (max_id, fid))
     return updates
+
+
+def _rule_updates(lines):
+    """LLM unavailable: read only the plainest statements about the call's own flight ("60 minutes late", "another 20 min")."""
+    out = []
+    for i, c in enumerate(lines):
+        text = c["text"] or ""
+        if m := RULE_ADD.search(text):
+            out.append({"line": i, "flight_id": c["flight_id"], "total_delay_min": None, "additional_delay_min": int(m[1])})
+        elif m := RULE_TOTAL.search(text):
+            out.append({"line": i, "flight_id": c["flight_id"], "total_delay_min": int(m[1]), "additional_delay_min": None})
+    return out
 
 
 # ---------- 2. change detection ----------
@@ -177,7 +216,8 @@ def _snapshots(con):
 
 
 def _disrupted(s):
-    return bool(s["delay_min"] > 0 or s["at_risk"] or s["crew_illegal"] or s["open_nogo"] or s["turn_gap"] > 0)
+    """The agents only recommend for a DELAYED flight: an on-time flight is watched, never re-planned."""
+    return s["delay_min"] > 0
 
 
 def _diff(old, new):
@@ -197,6 +237,9 @@ def _diff(old, new):
 
 # ---------- 3 + 4. re-plan and alert ----------
 def _replan(fid, changes, announce):
+    with closing(S.connect()) as con:  # marks the start, so the live report can show the agents at work
+        _event(con, fid, "REPLANNING", (f"Detected {', '.join(changes)}. " if changes else "") +
+               "Crew, Passenger and Maintenance agents re-checking their areas", {"changes": changes})
     rep = agent.get_report(fid, force=True)
     top = next((s for s in rep["suggestions"] if s["actions"]), None)
     sim = S.simulate(fid, top["actions"]) if top else None
@@ -205,7 +248,9 @@ def _replan(fid, changes, announce):
           (f"Re-planned: top option '{top['title']}' {verdict}. Needs controller approval." if top else "Re-planned: no actionable option.")
     with closing(S.connect()) as con:
         _event(con, fid, "REPLANNED", msg, {"changes": changes, "source": rep["source"], "suggestions": [s["title"] for s in rep["suggestions"]],
-                                            "top_ok": bool(sim and sim["ok"])})
+                                            "top_ok": bool(sim and sim["ok"]),
+                                            "agents": {k: {"source": v["source"], "summary": v["summary"], "generated": v.get("generated")}
+                                                       for k, v in (rep.get("agents") or {}).items()}})
         if announce:
             con.execute("INSERT INTO notifications(change_id, flight_id, recipient, message) VALUES (NULL, ?, ?, ?)",
                         (fid, "Aviant agent → OCC", f"{fid}: {msg}"[:600]))
@@ -225,10 +270,11 @@ def tick(force=False):
             watch = {w["flight_id"]: w for w in S.rows(con, "SELECT * FROM agent_watch")}
             snaps, flights = _snapshots(con)
             max_id = con.execute("SELECT COALESCE(MAX(id), 0) FROM comms").fetchone()[0]
-            for fid in snaps.keys() - watch.keys():  # first sight: today's calls are already in the report; watch from here on
-                con.execute("INSERT INTO agent_watch(flight_id, snapshot, comms_seen) VALUES (?, NULL, ?)", (fid, max_id))
-                watch[fid] = {"flight_id": fid, "snapshot": None, "comms_seen": max_id, "replanned_at": 0}
-            eta = _scan_calls(con, watch, flights)
+            # first sight: today's calls are already in the report; watch from here on, with the current state as baseline
+            for fid in snaps.keys() - watch.keys():
+                con.execute("INSERT OR IGNORE INTO agent_watch(flight_id, snapshot, comms_seen) VALUES (?, ?, ?)", (fid, json.dumps(snaps[fid]), max_id))
+            watch = {w["flight_id"]: w for w in S.rows(con, "SELECT * FROM agent_watch")}  # prime() may have added rows meanwhile
+            eta = _scan_calls(con)
             if eta:
                 snaps, flights = _snapshots(con)
             cached = {r["flight_id"] for r in S.rows(con, "SELECT flight_id FROM reports")}
@@ -241,7 +287,7 @@ def tick(force=False):
                 todo.append((bool(changes), sev, fid, changes, old is not None))
             elif changes and old is not None:
                 with closing(S.connect()) as con:
-                    _event(con, fid, "CHANGE", f"Detected {', '.join(changes)} (no disruption, no re-plan needed)", {"changes": changes})
+                    _event(con, fid, "CHANGE", f"Detected {', '.join(changes)}. Flight on time: the agents only recommend for delayed flights", {"changes": changes})
                     con.execute("UPDATE agent_watch SET snapshot = ?, checked_at = datetime('now','localtime') WHERE flight_id = ?",
                                 (json.dumps(snap), fid))
             else:
@@ -251,7 +297,7 @@ def tick(force=False):
         todo.sort(key=lambda t: (not t[0], tuple(-x for x in t[1])))  # real changes first, then the worst disruption
         done, deferred = [], []
         for changed, _, fid, changes, announce in todo:
-            if len(done) >= MAX_REPLANS or (time.time() - (watch[fid]["replanned_at"] or 0) < COOLDOWN_S):
+            if len(done) >= MAX_REPLANS or (time.time() - (watch[fid]["replanned_at"] or 0) < COOLDOWN_S) or fid in _busy():
                 deferred.append(fid)  # snapshot not stored, so the change is picked up again next tick
                 continue
             try:
@@ -279,6 +325,109 @@ def tick(force=False):
 def reset():
     """Forget in-memory pacing after a dataset reset (the watch tables are rebuilt with the database)."""
     _state["last_tick_ts"] = 0.0
+    with _live_lock:
+        _live.clear()
+
+
+# ---------- a call saved on the live report: the agents respond now, and the page watches them ----------
+def prime():
+    """Start watching every flight BEFORE a new call is stored, so that call counts as new and a delay it states shows up
+    as a change against a baseline (otherwise a call made right after a reset would be absorbed as 'already seen')."""
+    with closing(S.connect()) as con:
+        ensure_tables(con)
+        watched = {r[0] for r in con.execute("SELECT flight_id FROM agent_watch")}
+        ids = {r[0] for r in con.execute("SELECT id FROM flights WHERE kind = 'INBOUND'")}
+        if ids <= watched:
+            return
+        snaps, _ = _snapshots(con)
+        max_id = con.execute("SELECT COALESCE(MAX(id), 0) FROM comms").fetchone()[0]
+        for fid in snaps.keys() - watched:
+            con.execute("INSERT OR IGNORE INTO agent_watch(flight_id, snapshot, comms_seen, checked_at) VALUES (?, ?, ?, datetime('now','localtime'))",
+                        (fid, json.dumps(snaps[fid]), max_id))
+
+
+def call_logged(fid, speaker, text):
+    """Store a call typed or recorded on a flight's live report and start the agents on it at once (no 30-s wait).
+    Returns the event-log position to follow from (`since`) and the run number for live()."""
+    prime()
+    with closing(S.connect()) as con:
+        since = con.execute("SELECT COALESCE(MAX(id), 0) FROM agent_events").fetchone()[0]
+    r = S.log_call(fid, speaker, text)
+    return {**r, "since": since, "run": _kick(fid)}
+
+
+def _kick(fid):
+    with _live_lock:
+        run = _live.get(fid, {}).get("run", 0) + 1
+        _live[fid] = {"run": run, "status": "running", "started": time.time(), "result": None, "error": None}
+
+    def work():
+        res, err = None, None
+        try:
+            with _flight_locks_guard:
+                lock = _flight_locks.setdefault((S.DB, fid), threading.Lock())
+            with lock:  # two calls in a row on one flight: the second pass starts when the first ends
+                res = _call_pass(fid)
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            err = type(e).__name__
+        with _live_lock:
+            if _live.get(fid, {}).get("run") == run:
+                _live[fid].update(status="done", result=res, error=err, finished=time.time())
+    if os.getenv("VERCEL"):  # no background threads survive between requests there: run it inside this request
+        work()
+    else:
+        threading.Thread(target=work, name=f"aviant-call-{fid}", daemon=True).start()
+    return run
+
+
+def _busy():
+    """Flights with a call-triggered pass running: the background pass leaves them alone (no double re-plan)."""
+    with _live_lock:
+        return {f for f, st in _live.items() if st.get("status") == "running"}
+
+
+def _call_pass(fid):
+    """The monitoring pass for ONE flight, right after a call was saved on it. It does not wait for the background pass:
+    reading call lines is serialised (_scan_calls), and the report build is one-at-a-time per flight (agent.get_report)."""
+    with closing(S.connect()) as con:
+        ensure_tables(con)
+        eta = _scan_calls(con, only=fid)
+        row = S.one(con, "SELECT snapshot FROM agent_watch WHERE flight_id = ?", (fid,))
+        snaps, _ = _snapshots(con)
+    snap, old = snaps[fid], json.loads(row["snapshot"]) if row and row["snapshot"] else None
+    changes = _diff(old, snap) if old else []
+    replanned = False
+    if _disrupted(snap):
+        _replan(fid, changes, bool(changes))
+        replanned = True
+    elif changes:
+        with closing(S.connect()) as con:
+            _event(con, fid, "CHANGE", f"Detected {', '.join(changes)}. Flight on time: the agents only recommend for delayed flights", {"changes": changes})
+    with closing(S.connect()) as con:
+        con.execute("UPDATE agent_watch SET snapshot = ?, checked_at = datetime('now','localtime')" + (", replanned_at = ?" if replanned else "")
+                    + " WHERE flight_id = ?", (json.dumps(snap), *((time.time(),) if replanned else ()), fid))
+    return {"replanned": replanned, "changes": changes, "eta_updates": eta}
+
+
+def live(fid, since=0):
+    """What the agents did for a flight since an event-log position, plus whether the call-triggered run is still going.
+    The run status is read BEFORE the events: 'done' is set only after the run's last event is written, so a 'done' answer
+    always carries every event of that run."""
+    with _live_lock:
+        st = dict(_live.get(fid) or {})
+    with closing(S.connect()) as con:  # plain read (no CREATE): it must not wait behind the agents' writes
+        try:
+            events = S.rows(con, "SELECT id, ts, flight_id, kind, summary, detail FROM agent_events WHERE id > ? AND "
+                                 "(flight_id = ? OR (flight_id IS NULL AND kind IN ('MX_AGENT', 'LLM_UNAVAILABLE'))) ORDER BY id LIMIT 200",
+                            (int(since), fid))
+        except S.sqlite3.OperationalError:  # no event table yet (fresh database)
+            events = []
+    for e in events:
+        e["detail"] = json.loads(e["detail"] or "{}")
+    return {"flight_id": fid, "run": st.get("run"), "status": st.get("status", "idle"), "result": st.get("result"),
+            "error": st.get("error"), "elapsed_s": round((st.get("finished") or time.time()) - st["started"], 1) if st else None,
+            "events": events}
 
 
 def status(limit=25):

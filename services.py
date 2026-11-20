@@ -253,8 +253,9 @@ def hub_status(fid):
             ts, by = decided.get(c["id"], (c["ts"], c["decided_by"]))
             kinds = [a.get("kind") for a in acts] or (["SIGN_OFF"] if c["title"].startswith("Maintenance sign-off") else [])
             out.append({"id": f"C{c['id']}", "status": c["status"], "by": c["decided_by"] or by or "", "ts": ts, "kinds": kinds,
-                        "title": c["title"], "note": c["reason"] or "", "source": c["proposed_by"] or "", "actions": acts})
-        return {"flight_id": fid, "decisions": sorted(out + extra, key=lambda x: x["ts"], reverse=True)}
+                        "title": c["title"], "note": c["reason"] or "", "source": c["proposed_by"] or "", "actions": acts,
+                        "kpis": json.loads(c["kpis"]) if c["kpis"] and c["kpis"] != "null" else None})
+        return {"flight_id": fid, "outbound": _inbound(con, fid)["next_leg"], "decisions": sorted(out + extra, key=lambda x: x["ts"], reverse=True)}
 
 
 # ---------- atomic rebooking ----------
@@ -407,17 +408,22 @@ def _network_delay(con):
     return con.execute("SELECT COALESCE(SUM(delay_min), 0) FROM flights WHERE kind <> 'INBOUND'").fetchone()[0]
 
 
+def _onward_delay(con):
+    return con.execute("SELECT COALESCE(SUM(delay_min), 0) FROM flights WHERE kind = 'ONWARD'").fetchone()[0]
+
+
 def simulate(fid, actions):
     """Dry run: apply the actions inside a transaction, measure KPIs, then ROLLBACK. Nothing persists."""
     actions = _clean_actions(actions)
     with closing(connect()) as con:
         con.execute("BEGIN IMMEDIATE")
         try:
-            before = _network_delay(con)
+            before, onward = _network_delay(con), _onward_delay(con)
             for a in actions:
                 _apply(con, fid, a)
             k = _kpis(con, fid)
             k["network_delay_added"] = _network_delay(con) - before
+            k["onward_delay_added"] = _onward_delay(con) - onward  # holds on OTHER passengers' flights (not the outbound's own retime)
             k["total_cost_eur"] = k["pax_cost_eur"] + 100 * k["network_delay_added"]  # ~EUR 100 per network delay minute
             return {"ok": True, "reason": "", "kpis": k}
         except Exception as e:  # noqa: BLE001
@@ -522,10 +528,12 @@ def approve_change(cid, controller, pin, approve=True, chaos=False):
         return {"id": cid, "status": status, "reason": reason, "notified": len(notes), "integrity": _integrity(con)}
 
 
-def decide(fid, title, actions, controller, pin, chaos=False):
-    """Controller picks an option: PIN check, stage (guard dry run), then approve (atomic apply) in one step."""
+def decide(fid, title, actions, controller, pin, chaos=False, origin=None):
+    """Controller picks an option: PIN check, stage (guard dry run), then approve (atomic apply) in one step.
+    origin: the page it was decided on (e.g. "Decision hub"), kept with the name as "<origin> · <controller>" for the Decision log."""
     controller = _check_pin(controller, pin)
-    r = stage_controller_schedule_change(fid, title, actions, controller)
+    origin = re.sub(r"[^A-Za-z ]", "", str(origin or ""))[:20].strip()
+    r = stage_controller_schedule_change(fid, title, actions, f"{origin} · {controller}"[:40] if origin else controller)
     return approve_change(r["id"], controller, pin, True, chaos) if r["status"] == "PENDING" else r
 
 

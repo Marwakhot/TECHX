@@ -4,7 +4,7 @@
 // nothing on this page executes an action: approval happens only in the controller approval queue (PIN).
 const DecisionLog = (() => {
   const q = (s, el = document) => el.querySelector(s);
-  const X = { root: null, selCall: null, selDec: null, f: { status: "", call: "", type: "" }, calls: [], decs: [], extracting: new Set(),
+  const X = { root: null, selCall: null, selDec: null, f: { status: "", call: "", type: "" }, calls: [], decs: [], ops: [], extracting: new Set(),
     play: null, rec: null, drawer: null, newCall: null };
   let me = "";
   try { me = localStorage.getItem("aviant.me") || ""; } catch { /* private mode */ }
@@ -48,12 +48,17 @@ const DecisionLog = (() => {
 
   async function load() {
     if (!X.root?.isConnected) return;
-    let calls, decs, log, ledger;
+    let calls, decs, log, ledger, hub;
     try {
-      [calls, decs, log, ledger] = await Promise.all([api("/api/calls"), api("/api/ledger/decisions"), api("/api/decisions"), api(`/api/ledger/${S.flight}`)]);
+      [calls, decs, log, ledger, hub] = await Promise.all([api("/api/calls"), api("/api/ledger/decisions"), api("/api/decisions"), api(`/api/ledger/${S.flight}`),
+        api(`/api/hub/${S.flight}`)]);
     } catch (e) { q("#dl-calls").innerHTML = `<p class="bad">Could not load calls: ${h(e.message)}</p>`; return; }
     X.calls = calls.filter((c) => c.flight_id === S.flight);
     X.decs = decs.filter((d) => d.flight_id === S.flight);
+    // decisions taken outside calls (Decision hub, Crew / Passengers / Maintenance pages, live report, engineer sign-offs);
+    // a change that came from a call decision is already in the list as that decision
+    const fromCalls = new Set(X.decs.map((d) => d.change_id).filter(Boolean));
+    X.ops = hub.decisions.filter((c) => !(c.id.startsWith("C") && fromCalls.has(+c.id.slice(1)))).map((c) => opOf(c, hub.outbound));
     X.demo = ledger.demo_calls.filter((d) => !X.calls.some((c) => c.demo_id === d.id));
     if (!X.selCall || !X.calls.some((c) => c.id === X.selCall)) X.selCall = (X.calls.find((c) => c.status === "LIVE") || X.calls[0])?.id ?? null;
     renderCalls(); renderKeyDetails(); renderFilters(); renderLog(); renderQueue(log); renderAlert();
@@ -65,7 +70,7 @@ const DecisionLog = (() => {
     const live = q("#dl-live");
     live.hidden = !X.demo.length || !!X.play;
     if (X.demo.length) live.textContent = `▶ Start live call: ${X.demo[0].title}`;
-    q("#dl-ccount").textContent = `${X.calls.length} calls · ${X.decs.length} decisions`;
+    q("#dl-ccount").textContent = `${X.calls.length} calls · ${X.decs.length} decisions from calls · ${X.ops.length} from the decision hub & pages`;
     q("#dl-calls").innerHTML = X.calls.map((c) => {
       const isLive = c.status === "LIVE", n = c.counts;
       return `<div class="dl-call ${isLive ? "live" : ""} ${c.id === X.selCall ? "sel" : ""}" data-call="${c.id}" tabindex="0" role="button" aria-pressed="${c.id === X.selCall}"
@@ -136,23 +141,76 @@ const DecisionLog = (() => {
   function renderFilters() {
     const sel = (k, label, opts) => `<label class="small muted">${label} <select data-filter="${k}"><option value="">All</option>${opts.map(([v, l]) =>
       `<option value="${h(v)}" ${X.f[k] === String(v) ? "selected" : ""}>${h(l)}</option>`).join("")}</select></label>`;
-    q("#dl-filters").innerHTML = sel("status", "Status", STATUSES) + sel("call", "Call", X.calls.map((c) => [c.id, `${c.label} ${c.title}`])) +
+    q("#dl-filters").innerHTML = sel("status", "Status", STATUSES) + sel("call", "Source", [["ops", "Decision hub & pages (no call)"], ...X.calls.map((c) => [c.id, `${c.label} ${c.title}`])]) +
       sel("type", "Issue type", TYPES.map((t) => [t, t[0].toUpperCase() + t.slice(1)]));
   }
-  const shown = () => X.decs.filter((d) => (!X.f.status || d.status_code === X.f.status) && (!X.f.call || String(d.call_id) === X.f.call) &&
-    (!X.f.type || d.category === X.f.type));
+  // one list, newest first: decisions from calls and decisions taken in the Decision hub / on the pages
+  const shown = () => [...X.decs, ...X.ops].filter((d) => (!X.f.status || d.status_code === X.f.status)
+    && (!X.f.call || (X.f.call === "ops" ? !!d.op : String(d.call_id) === X.f.call)) && (!X.f.type || (d.categories || [d.category]).includes(X.f.type)))
+    .sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
+  const key = (d) => d.op || d.id;
   function renderLog() {
     const list = shown(), el = q("#dl-log");
-    if (!X.decs.length) { el.innerHTML = '<p class="dl-empty">No decisions yet. They appear here as soon as the AI has analysed a call.</p>'; return; }
+    if (!X.decs.length && !X.ops.length) { el.innerHTML = '<p class="dl-empty">No decisions yet. They appear here as soon as one is taken in the Decision hub or on a page, or the AI has analysed a call.</p>'; return; }
     if (!list.length) { el.innerHTML = '<p class="dl-empty">No decisions match these filters.</p>'; return; }
-    if (!list.some((d) => d.id === X.selDec)) X.selDec = (list.find((d) => d.status_code === "BLOCKED") || list[0]).id;
-    el.innerHTML = `<div class="dl-tabs" role="tablist" aria-orientation="vertical" aria-label="Decisions">${list.map((d) => `<button class="dl-tab" role="tab" id="dl-tab-${d.id}"
-        aria-selected="${d.id === X.selDec}" aria-controls="dl-panel" tabindex="${d.id === X.selDec ? 0 : -1}" data-dec="${d.id}">
-        <div class="r1"><span class="dl-code">${h(d.label_id)}</span>${st(d.status_code, d.status_label)}<span>${h((d.at || "").slice(0, 5))}</span></div>
-        <div class="r2">${h(d.summary)}</div></button>`).join("")}</div>
+    if (!list.some((d) => key(d) === X.selDec)) X.selDec = key(list.find((d) => d.status_code === "BLOCKED") || list[0]);
+    el.innerHTML = `<div class="dl-tabs" role="tablist" aria-orientation="vertical" aria-label="Decisions">${list.map((d) => `<button class="dl-tab" role="tab" id="dl-tab-${h(key(d))}"
+        aria-selected="${key(d) === X.selDec}" aria-controls="dl-panel" tabindex="${key(d) === X.selDec ? 0 : -1}" ${d.op ? `data-op="${h(d.op)}"` : `data-dec="${d.id}"`}>
+        <div class="r1"><span class="dl-code">${h(d.label_id)}</span>${st(d.status_code, d.status_label)}<span>${h(String(d.at || "").slice(0, 5))}</span></div>
+        <div class="r2">${h(d.summary)}${d.op ? `<div class="small muted">${h(d.origin)}${d.by ? ` · ${h(d.by)}` : ""}</div>` : ""}</div></button>`).join("")}</div>
       <div class="dl-panel" role="tabpanel" id="dl-panel" aria-labelledby="dl-tab-${X.selDec}" tabindex="0"><div class="dl-skel"></div><div class="dl-skel"></div></div>`;
     if (matchMedia("(max-width:900px)").matches) q(`#dl-tab-${X.selDec}`).after(q("#dl-panel")); // accordion on narrow screens
-    renderDetail(X.selDec);
+    typeof X.selDec === "string" ? renderOp(X.selDec) : renderDetail(X.selDec);
+  }
+
+  // ---------------- decisions taken in the Decision hub / on the pages ----------------
+  const OPST = { APPROVED: ["EXECUTED", "Executed"], PENDING: ["AWAITING_APPROVAL", "Awaiting approval"], BLOCKED: ["BLOCKED", "Blocked by guards"],
+    REJECTED: ["REJECTED", "Rejected"], ROLLED_BACK: ["ROLLED_BACK", "Rolled back"] };
+  const KCAT = { CREW_SWAP: "crew", CREW_AUTOSWAP: "crew", REBOOK: "passengers", REBOOK_AT_RISK: "passengers", REBOOK_TIERS: "passengers",
+    ASSIGN_ENGINEER: "maintenance", SIGN_OFF: "maintenance", GATE_CHANGE: "gate", DELAY: "network", DEPARTURE_RELEASE: "network" };
+  const ORIGIN_PAGES = new Set(["Decision hub", "Crew page", "Passengers page", "Maintenance page", "Live report", "Decision log"]);
+  function opOf(c, outbound) {
+    const [origin, who] = c.source.includes(" · ") ? c.source.split(" · ") : [c.source, ""];
+    const where = c.id.startsWith("A") ? "Connecting passengers page" : c.kinds.includes("SIGN_OFF") ? "Maintenance page · engineer sign-off"
+      : origin === "Passenger Impact Agent" ? "Connecting passengers page" : ORIGIN_PAGES.has(origin) ? origin : "Controller";
+    const [code, label] = OPST[c.status] || [c.status, c.status];
+    // which agent each action comes from: crew swaps = Crew agent, rebookings and onward holds = Passenger agent,
+    // engineer assignments = Maintenance agent, the outbound's retime / gate / release = Orchestrator
+    const agents = {};
+    for (const a of c.actions || []) {
+      const k = /^CREW/.test(a.kind) ? "Crew agent" : /^REBOOK/.test(a.kind) || (a.kind === "DELAY" && a.flight_id !== outbound) ? "Passenger agent"
+        : a.kind === "ASSIGN_ENGINEER" ? "Maintenance agent" : "Orchestrator";
+      agents[k] = (agents[k] || 0) + 1;
+    }
+    return { op: c.id, label_id: `OP-${c.id.slice(1)}`, status_code: code, status_label: label, summary: c.title, ts: c.ts, at: String(c.ts).slice(11),
+      origin: where, by: c.by || who, actions: c.actions || [], kpis: c.kpis, note: c.note, agents, kinds: c.kinds,
+      categories: [...new Set(c.kinds.map((k) => KCAT[k]).filter(Boolean))] };
+  }
+  function renderOp(id) {
+    const d = X.ops.find((x) => x.op === id), el = q("#dl-panel");
+    if (!d || !el) return;
+    const signoff = d.kinds.includes("SIGN_OFF"), k = d.kpis, ok = d.status_code === "EXECUTED";
+    const steps = signoff ? [["Assigned engineer signs off with their licence", "done"], ["NO-GO item closed", "done"]]
+      : [[`Proposed on the ${d.origin}`, "done"], ["Guard-checked (dry run)", d.status_code === "BLOCKED" ? "failed" : "done"],
+        ["Approved with name + PIN", ok || d.status_code === "ROLLED_BACK" ? "done" : d.status_code === "REJECTED" ? "failed" : d.status_code === "AWAITING_APPROVAL" ? "current" : "todo"],
+        ["Executed as one step", ok ? "done" : d.status_code === "ROLLED_BACK" ? "failed" : "todo"]];
+    const pipe = steps.map(([s, s2]) => `<li class="${s2}">${{ done: "✔", current: "⏳", failed: "✕", todo: "○" }[s2]} ${h(s)}</li>`).join("");
+    const built = Object.entries(d.agents).map(([a, n]) => `${a} (${n} action${n === 1 ? "" : "s"})`).join(" · ");
+    const effect = k ? `After this decision (dry run at approval): ${k.at_risk} connections at risk (${k.vulnerable_at_risk} vulnerable) · ${k.crew_illegal} crew over the duty limit · ${k.open_nogo} NO-GO open · turnaround ${k.turn_gap > 0 ? "+" : ""}${k.turn_gap} min vs schedule` : "";
+    el.innerHTML = `<div class="dl-h"><span class="dl-code">${h(d.label_id)} · ${h(d.origin)}</span>${st(d.status_code, d.status_label)}</div>
+      <h4>${h(d.summary)}</h4>
+      <ol class="dl-pipe" aria-label="Status pipeline">${pipe}</ol>
+      ${d.note && !ok ? `<div class="dl-block" role="status"><b class="bad">${d.status_code === "BLOCKED" ? "⛔ BLOCKED by code" : "Not applied"}</b> ${h(shortIds(d.note))}</div>` : ""}
+      <dl class="dl-fields">
+        <dt>Decision</dt><dd>${h(d.summary)}</dd>
+        <dt>Decided by</dt><dd><b>${h(d.by || "—")}</b> · ${h(d.origin)}</dd>
+        <dt>When</dt><dd>${h(d.ts)}</dd>
+        ${built && !signoff ? `<dt>${d.origin === "Decision hub" ? "Built by the agents" : "Areas"}</dt><dd>${h(built)}</dd>` : ""}
+        <dt>System actions</dt><dd>${d.actions.length ? actionsText(d.actions) : '<span class="muted">none: recorded only</span>'}</dd>
+        ${effect ? `<dt>Expected effect</dt><dd>${h(effect)}</dd>` : ""}
+        <dt>Evidence</dt><dd>Audit log entry with the state hash; it replays in <a href="#/tab/replay">Audit replay</a>.${d.origin === "Decision hub" ? ` <a href="#/lab/${h(S.flight)}">Open the Decision hub →</a>` : ""}</dd>
+      </dl>
+      <p class="small muted" style="margin-top:12px">${ok ? "Applied atomically: every action together, or none." : "Nothing was applied."}</p>`;
   }
 
   async function renderDetail(did) {
@@ -204,11 +262,12 @@ const DecisionLog = (() => {
 
   // ---------------- events ----------------
   async function onClick(e) {
-    const t = e.target.closest("[data-tx],[data-dec],[data-call],[data-conf],[data-rej],[data-send],[data-report],[data-appr],[data-extract],[data-goqueue]");
+    const t = e.target.closest("[data-tx],[data-dec],[data-op],[data-call],[data-conf],[data-rej],[data-send],[data-report],[data-appr],[data-extract],[data-goqueue]");
     if (!t || t.matches("input")) return;
     const d = t.dataset;
     if (d.tx) { e.stopPropagation(); return openTranscript(+d.tx, d.line ? +d.line : null, t); }
     if (d.dec) { X.selDec = +d.dec; X.f = { status: "", call: "", type: "" }; renderFilters(); renderLog(); return q("#dl-log").scrollIntoView({ behavior: "smooth", block: "start" }); }
+    if (d.op) { X.selDec = d.op; return renderLog(); }
     if (d.call) { X.selCall = +d.call; renderCalls(); renderKeyDetails(); return; }
     if (d.extract) return extract(+d.extract);
     if (d.goqueue) return q("#dl-queue").scrollIntoView({ behavior: "smooth" });
@@ -241,7 +300,7 @@ const DecisionLog = (() => {
       e.preventDefault();
       const tabs = [...document.querySelectorAll(".dl-tab")], i = tabs.indexOf(tab);
       const n = tabs[e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : (i + (e.key === "ArrowDown" ? 1 : -1) + tabs.length) % tabs.length];
-      X.selDec = +n.dataset.dec; renderLog(); q(`#dl-tab-${X.selDec}`)?.focus();
+      X.selDec = n.dataset.op || +n.dataset.dec; renderLog(); q(`#dl-tab-${X.selDec}`)?.focus();
     }
     const card = e.target.closest?.(".dl-call");
     if (card && e.target === card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); X.selCall = +card.dataset.call; renderCalls(); renderKeyDetails(); q(`[data-call="${X.selCall}"]`)?.focus(); }

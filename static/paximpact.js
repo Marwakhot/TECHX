@@ -91,7 +91,10 @@ const PaxImpact = (() => {
   // ---------------- render (layout only; same data + same send/reveal endpoints) ----------------
   const DECIDE = ["failed", "missed", "needs", "risk"], DONE = ["rebooked", "pending"];
   const tabOf = (p) => DONE.includes(bucket(p)) ? "approved" : DECIDE.includes(bucket(p)) || bagIssue(p) || !feas(p).ok ? "decide" : "none";
-  const chosen = (p) => { const a = p.alternatives || []; return a.find((x) => x.flight === P.override[p.ref]) || a.find((x) => x.bags_make_it || !p.bags) || a[0]; };
+  // the controller's own edit wins; otherwise the Passenger agent's pick (specialists.py); otherwise the earliest flight
+  // that passenger and bags can make. On time: the agents recommend nothing, only the controller's own choice counts.
+  const chosen = (p) => { const a = p.alternatives || []; return a.find((x) => x.flight === P.override[p.ref]) || (P.data.agent?.delayed === false ? undefined
+    : a.find((x) => x.flight === p.agent_pick?.flight) || a.find((x) => x.bags_make_it || !p.bags) || a[0]); };
   function conf(p) {
     const a = chosen(p);
     if (!a || (p.missing || []).length > 1) return ["low", "Low confidence", 1];
@@ -128,6 +131,17 @@ const PaxImpact = (() => {
   const needs = (p) => p.assistance ? `<span class="px2-need">${P.revealed[p.ref] ? h(P.revealed[p.ref].assistance) : "Assistance"}</span>` : "";
   const dots = (n) => `<span class="px2-dots">${[1, 2, 3].map((i) => `<i class="${i <= n ? "on" : ""}"></i>`).join("")}</span>`;
 
+  // what the Passenger agent did (AgentPanel, agentlive.js): its hold decisions, then its rebooking picks (protected care first)
+  function agentSec() {
+    const ag = P.data.agent; if (!ag) return "";
+    const holds = (ag.holds || []).map((x) => ({ who: `${x.flight_id} by ${x.minutes} min`, what: x.recommended ? `saves ${x.pax.length} connection(s)` : "not recommended",
+      why: x.reason, by: x.by, tone: x.recommended ? "hold" : "hold off" }));
+    const picks = P.data.passengers.filter((p) => p.agent_pick).sort((a, b) => b.assistance - a.assistance);
+    const shown = picks.slice(0, 8).map((p) => ({ who: `PNR ${p.ref}${p.assistance ? " · protected care" : ""}`, what: `rebook ${p.agent_pick.flight}`,
+      why: p.agent_hold ? `${p.agent_pick.reason} (saved by the ${p.agent_hold.flight} hold if approved)` : p.agent_pick.reason, by: p.agent_pick.by }));
+    return AgentPanel.html("pax", ag, [...holds, ...shown], picks.length - shown.length, "No passenger is missing a connection: nothing to rebook.");
+  }
+
   function render() {
     const d = P.data, s = d.summary, all = d.passengers;
     const B = Object.fromEntries(BUCKETS.map((x) => [x[0], []]));
@@ -149,6 +163,7 @@ const PaxImpact = (() => {
         <div class="k"><span>Next connection deadline</span>${next ? `<b><span class="px-cd" data-iso="${h(next.departure_iso)}"></span></b><small><span class="px-mono">${h(next.connecting_flight)}</span> · ${h(next.final_destination)}</small>`
           : '<b>—</b><small>no open connection departing</small>'}</div>
       </section>
+      ${agentSec()}
       <div class="px2">
       <header class="px2-head">
         <div><h2>All ${all.length} connecting passengers on ${h(s.flight)}</h2>
@@ -249,7 +264,9 @@ const PaxImpact = (() => {
         <h4 class="px2-cap">Data used</h4><dl class="px2-dl"><dt>Inbound flight status</dt><dd>${h(P.data.summary.flight)} ${P.data.summary.delay_min ? `+${P.data.summary.delay_min} min` : "on time"}</dd>
           <dt>Seat availability</dt><dd>${alts.map((x) => h(x.flight)).join(" · ") || "none"}</dd><dt>Passenger profile</dt><dd>${p.assistance ? "Assistance recorded" : "No assistance"} · ${h(p.priority_category || "")}</dd>
           <dt>Bags</dt><dd>${p.bags ? `${p.bags} on ${h(p.bag_location || "unknown")}` : "none checked"}</dd></dl>
-        <h4 class="px2-cap">Assumptions</h4><ol class="px2-ol">${(p.factors || []).map((x) => `<li>${h(x)}</li>`).join("")}${(p.missing || []).map((x) => `<li class="px-warn">${h(x)}</li>`).join("")}</ol>
+        <h4 class="px2-cap">Assumptions</h4><ol class="px2-ol">${[...(a && p.agent_pick?.flight === a.flight && p.agent_pick.reason ? [`${P.data.agent?.name || "Passenger agent"}: ${p.agent_pick.reason}`] : []),
+          ...(p.agent_hold ? [`${P.data.agent?.name || "Passenger agent"} recommends holding ${p.agent_hold.flight} by ${p.agent_hold.minutes} min instead: ${p.agent_hold.reason}`] : []),
+          ...(p.factors || [])].map((x) => `<li>${h(x)}</li>`).join("")}${(p.missing || []).map((x) => `<li class="px-warn">${h(x)}</li>`).join("")}</ol>
         <h4 class="px2-cap">Calculations</h4><dl class="px2-dl box"><dt>Available connection time</dt><dd>${p.available_min == null ? "unknown" : `${p.available_min} min`}</dd>
           <dt>Minimum connection time</dt><dd>${p.mct_min} min</dd><dt><b>Buffer remaining</b></dt><dd><b>${p.available_min == null ? "—" : `${p.available_min - p.mct_min} min`}</b></dd></dl>
         <h4 class="px2-cap">Alternatives considered</h4>${alts.map((x) => `<div class="px2-alt"><b class="px2-mono">${h(x.flight)} · ${h(x.departs)}</b> ${x === a ? '<em class="ok">Chosen</em>' : '<em>Not chosen</em>'}

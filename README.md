@@ -21,5 +21,8 @@ Run the tests with `pytest`. Without an API key, simple built-in rules write the
 - **Connecting passengers**: who will miss their connection, rebooking with vulnerable passengers first, and bags that follow them.
 - **Maintenance**: open aircraft faults, engineer assignment and licensed sign-off.
 - **Decision log**: every call, decision and approval in one place.
-- **Background agent**: checks every 30 seconds for new delays and updates the plans by itself.
+- **Specialist agents**: a Crew agent (standby swaps), a Passenger agent (holds and rebookings) and a Maintenance agent (engineer assignments) each work out their own area and suggest what the Crew, Connecting passengers and Maintenance pages show. Code gives them only options the safety rules allow; each re-decides by itself when something in its area changes.
+- **Orchestrator**: combines the three agents' proposals into the live report and the 3 Decision hub scenarios.
+- **Background agent**: checks every 30 seconds for new delays and runs the specialists and the orchestrator by itself. A delay stated on a call saved on a live report starts them at once, and the report shows each agent working.
+- **Live-demo flight AZ410** (Rome, on time): its crew, connections and a NO-GO item only become problems once a delay is stated on a call (e.g. "AZ410 now estimating 60 minutes late"), so all three agents have something to solve.
 - **Safety**: hard rules the AI cannot bypass, a PIN for every approval, all-or-nothing changes and a tamper-proof audit log.

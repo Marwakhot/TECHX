@@ -102,7 +102,7 @@ const Extras = (() => {
       const chaos = q("input[name=x-chaos]:checked").value || false;
       askAuth(`Controller approval: ${h(option.title)}<div class="small muted" style="margin-top:6px">${actionsText(option.actions)}</div>` +
         (chaos ? `<p class="bad small">Chaos on: ${chaos === "bag" ? "the baggage system rejects a re-tag" : "a competing booking grabs a seat"} mid-batch</p>` : ""), async (a) => {
-        const r = await api("/api/decide", { flight_id: id, title: option.title, actions: option.actions, chaos, ...a });
+        const r = await api("/api/decide", { flight_id: id, title: option.title, actions: option.actions, chaos, origin: "Live report", ...a });
         resultToast(r); refreshBell();
         if (r.status === "ROLLED_BACK") {
           q("#x-pnotes").innerHTML = `<p class="bad">ROLLED BACK: ${h(r.reason)}</p><p class="small muted">Nothing changed: every hold, crew swap, gate change, seat and bag in this decision was undone ·
@@ -163,21 +163,30 @@ const Extras = (() => {
       <div class="mx-sum" id="mx-sum"></div></div>
       ${how(`${CODE} computes every time on this page: an engineer can start once they have walked to the aircraft <i>and</i> it is on block;
         the fix ends after the inspection time; the spare time is the scheduled departure minus that finish. Times are relative to now (T+0).`, "How times are worked out")}</div>
+      <div id="mx-agent"></div>
       <div id="mx-out"><p class="muted small"><span class="x-spin"></span> Loading the maintenance queue…</p></div>`;
     await loadMx();
   }
+  // the engineer the Maintenance agent picked for an open item (specialists.py), else the one who finishes first
+  const mxPick = (i) => i.options.find((o) => o.id === i.agent_pick?.engineer_id) || i.options[0];
   async function loadMx() {
     X.mx = await api("/api/maintenance");
     const items = X.mx.items, n = (f) => items.filter(f).length;
-    const blocking = items.filter((i) => i.blocks_departure);
+    // what the Maintenance agent did (AgentPanel, agentlive.js): one engineer per open item on a delayed flight
+    const ag = X.mx.agent;
+    q("#mx-agent").innerHTML = AgentPanel.html("mx", ag && { ...ag, picks: undefined }, (ag?.picks || []).map((p) => {
+      const i = items.find((x) => x.id === p.item_id), e = i?.options.find((o) => o.id === p.engineer_id);
+      return { who: `${p.item_id}${i ? ` · ${i.item}` : ""} (${p.blocks_departure ? "NO-GO" : "deferrable"}, ${p.outbound || "—"})`, what: e ? e.name : p.engineer_id,
+        why: p.reason, by: p.by, tone: p.blocks_departure && (p.slack ?? 0) < 0 ? "late" : "" }; }), 0, "No open item on a delayed flight needs an engineer.");
+    const blocking = items.filter((i) => i.blocks_departure), late = blocking.filter((i) => ((i.assigned || mxPick(i))?.slack ?? 0) < 0);
     q("#mx-sum").innerHTML = `<div><b class="${blocking.length ? "bad" : "ok"}">${blocking.length}</b><span>NO-GO open</span></div>
-      <div><b class="${blocking.some((i) => (i.assigned?.slack ?? i.options[0]?.slack ?? 0) < 0) ? "bad" : "ok"}">${blocking.filter((i) => (i.assigned?.slack ?? i.options[0]?.slack ?? 0) < 0).length}</b><span>will delay a release</span></div>
+      <div><b class="${late.length ? "bad" : "ok"}">${late.length}</b><span>will delay a release</span></div>
       <div><b>${n((i) => i.severity !== "NO-GO" && i.status !== "SIGNED")}</b><span>deferrable (MEL)</span></div>
       <div><b>${n((i) => i.status === "SIGNED")}</b><span>signed off</span></div>`;
     if (!items.some((i) => i.id === X.mxSel)) X.mxSel = items[0]?.id;
     const group = (i) => (i.status === "SIGNED" ? "Signed off" : i.blocks_departure ? "Blocking a departure" : "Deferrable (MEL) · does not block release");
     q("#mx-out").innerHTML = `<div class="ga-inbox"><div class="card ga-list" tabindex="0" role="listbox" aria-label="Maintenance items">${items.map((i, j) => {
-      const best = i.assigned || i.options[0];
+      const best = i.assigned || mxPick(i);
       return `${j === 0 || group(items[j - 1]) !== group(i) ? `<div class="ga-sep small muted">${group(i)}</div>` : ""}
         <div class="ga-item mx-item" role="option" data-k="${h(i.id)}"><b>${h(i.id)} · ${h(i.item)}</b>${tag(i.severity, i.severity === "NO-GO" && i.status !== "SIGNED" ? "bad" : "")}
           <span class="small muted">${h(i.tail)} · ${h(i.inbound || "—")} → ${h(i.outbound || "—")} · ${h(i.status.toLowerCase())}</span>
@@ -208,7 +217,9 @@ const Extras = (() => {
         <span class="small muted">Needs the assigned engineer's licence number</span></div>` : ""}
       ${i.status === "OPEN" ? `<h3 class="mx-h">Assign an engineer</h3><p class="small muted">Ranked by when they could finish. ${CODE}</p>
         <table class="mx-eng"><thead><tr><th>Engineer</th><th>Base</th><th class="num">Walk</th><th class="num">Done by</th><th>vs departure</th><th></th></tr></thead><tbody>
-        ${i.options.map((o, n) => `<tr class="${o.busy_with ? "muted" : ""}"><td><b>${h(o.name)}</b>${n === 0 && !o.busy_with ? ' <span class="tag ok">fastest</span>' : ""}
+        ${i.options.map((o, n) => `<tr class="${o.busy_with ? "muted" : ""}"><td><b>${h(o.name)}</b>${o.busy_with ? ""
+          : o.id === i.agent_pick?.engineer_id ? ` <span class="tag ok" title="${h(`${X.mx.agent?.name || "Maintenance agent"}: ${i.agent_pick.reason}`)}">agent pick</span>`
+          : n === 0 && !X.mx.agent ? ' <span class="tag ok">fastest</span>' : ""}
           ${o.busy_with ? `<div class="small muted">busy on ${h(o.busy_with)}</div>` : ""}</td><td>${h(o.location)}</td><td class="num">${o.walk_min} min</td>
           <td class="num">${tt(o.finish)}</td><td>${i.blocks_departure ? slackTag(o.slack) : '<span class="muted small">not blocking</span>'}</td>
           <td><button class="ghost" data-assign="${h(o.id)}" ${o.busy_with ? "disabled" : ""}>Assign</button></td></tr>`).join("")}</tbody></table>
@@ -378,13 +389,33 @@ const Extras = (() => {
       ${how(`${CODE} rebuilds the seed dataset in a scratch database and re-applies every committed event from the append-only audit log, comparing the state hash after
       each step with the hash recorded at commit time. A match proves the log fully explains the live state, and that rolled-back attempts left no trace.`)}</div>
       <div id="x-rout"><p class="muted small"><span class="x-spin"></span> Replaying the audit log…</p></div>`;
-    const run = async () => { stopPlay(); X.rp = await api("/api/replay"); X.step = X.rp.steps.length - 1; X.rq = X.rq || { actor: "", text: "", only: false }; drawReplay(); };
+    // per flight: the replay always verifies the whole log; the flight picks whose figures each stage shows and which events are listed
+    X.rflights = (await api("/api/flights")).map((f) => f.id);
+    X.rq = { ...(X.rq || { actor: "", text: "", only: false }), flight: S.flight };  // opens on the flight you are working on
+    const run = async () => {
+      stopPlay();
+      try { X.rp = await api(`/api/replay/${encodeURIComponent(X.rq.flight || S.flight)}`); X.rnote = ""; }
+      catch (e) { // e.g. a server started before the per-flight replay existed: still replay and verify the whole log
+        X.rp = await api("/api/replay"); X.rnote = `Per-flight figures unavailable (${e.message}); restart the server to get them. Showing the whole log.`;
+        if (!X.rp.steps.some((s) => "flight" in s)) X.rq.flight = ""; // events carry no flight there: list them all
+      }
+      // opening on a flight with no logged events (e.g. the default flight): switch to the flight with the latest activity
+      const latest = [...X.rp.steps].reverse().find((s) => s.flight)?.flight;
+      if (X.ropen && X.rq.flight && latest && latest !== X.rq.flight && !X.rp.steps.some((s) => s.flight === X.rq.flight)) {
+        X.ropen = false; X.rq.flight = latest; return run();
+      }
+      X.ropen = false;
+      X.step = X.rp.steps.length - 1; drawReplay();
+      if (X.rnote) q("#x-rout").insertAdjacentHTML("afterbegin", `<p class="warn small">${h(X.rnote)}</p>`);
+    };
+    X.rerun = run; X.ropen = true;
     q("#x-rrun").onclick = (e) => busy(e.target, run);
-    run().catch((e) => toast(e.message, "bad"));
+    run().catch((e) => { toast(e.message, "bad"); q("#x-rout").innerHTML = `<p class="bad">Audit replay failed: ${h(e.message)}</p>`; });
   }
 
   const stepMatches = (s, i) => {
     const f = X.rq; if (i === 0) return true;
+    if (f.flight && s.flight !== f.flight) return false;
     if (f.only && !s.state_change && !stepBad(s)) return false;
     if (f.actor && s.actor !== f.actor) return false;
     return !f.text || `${s.seq} ${s.action} ${s.actor} ${s.ts} ${JSON.stringify(s.detail)}`.toLowerCase().includes(f.text.toLowerCase());
@@ -395,7 +426,9 @@ const Extras = (() => {
     const r = X.rp, changes = r.steps.filter((s, i) => i && s.state_change).length, actors = [...new Set(r.steps.slice(1).map((s) => s.actor))].sort();
     q("#x-rout").innerHTML = `<div id="ar-stage"></div>
       <div class="card ar-wrap" tabindex="0" aria-label="Audit timeline. Use the left and right arrow keys to move between events.">
-        <div class="ar-ctl"><div class="row"><button class="ghost" data-go="-1" aria-label="Previous event">◀</button><button id="ar-play">▶ Play</button>
+        <div class="ar-ctl"><label class="small">Flight <select id="ar-flight"><option value="">All flights</option>${X.rflights.map((f) =>
+            `<option ${f === X.rq.flight ? "selected" : ""}>${h(f)}</option>`).join("")}</select></label>
+          <div class="row"><button class="ghost" data-go="-1" aria-label="Previous event">◀</button><button id="ar-play">▶ Play</button>
           <button class="ghost" data-go="1" aria-label="Next event">▶</button></div>
           <label class="small">Actor <select id="ar-actor"><option value="">All</option>${actors.map((a) => `<option ${a === X.rq.actor ? "selected" : ""}>${h(a)}</option>`).join("")}</select></label>
           <input id="ar-q" class="ar-q" placeholder="Search events (flight, action, item…)" value="${h(X.rq.text)}" maxlength="60">
@@ -408,7 +441,8 @@ const Extras = (() => {
           <em>${i === 0 ? "○ step 0" : stepBad(s) ? "● mismatch" : s.state_change ? "● changed state" : "○ logged only"}</em></button>`).join("")}</div></div></div>
 <div class="card ga-verdict ${r.verified ? "ok" : "bad"}"><div>
         <div class="ga-v-big">${r.verified ? "✔ Verified" : "✘ Mismatch"}</div>
-        <div class="small muted">${r.events} events · ${changes} changed state · ${r.mismatches} mismatches</div></div>
+        <div class="small muted">Whole audit log: ${r.events} events · ${changes} changed state · ${r.mismatches} mismatches</div>
+        <div class="small muted">Figures on each stage: ${h(r.flight)}${X.rq.flight ? ` · events listed: ${h(X.rq.flight)} only` : " · events listed: all flights"}</div></div>
         <div class="ar-right"><div class="ar-hashes small"><span class="muted">Replayed</span><b class="x-mono">${h(r.replayed_hash)}</b>
           <span class="muted">Live</span><b class="x-mono ${r.replayed_hash === r.live_hash ? "ok" : "bad"}">${h(r.live_hash)}</b></div>
           <button class="ghost" id="ar-export">Export evidence</button></div>
@@ -416,6 +450,7 @@ const Extras = (() => {
       <div class="grid2 ar-panes"><div class="card" id="ar-diff"></div><div class="card" id="ar-ev"></div></div>`;
     const refilter = () => { markNodes(); const nav = navSteps(); if (!nav.includes(X.step)) selectStep(nav[nav.length - 1] ?? 0); };
     q("#ar-only").onchange = (e) => { X.rq.only = e.target.checked; refilter(); };
+    q("#ar-flight").onchange = (e) => { X.rq.flight = e.target.value; if (X.rq.flight) X.rerun().catch((err) => toast(err.message, "bad")); else refilter(); };
     q("#ar-actor").onchange = (e) => { X.rq.actor = e.target.value; refilter(); };
     q("#ar-q").oninput = (e) => { X.rq.text = e.target.value.trim(); refilter(); };
     q("#ar-export").onclick = () => download(`audit-replay-evidence-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.json`,
@@ -432,7 +467,7 @@ const Extras = (() => {
   function markNodes() {
     const nav = new Set(navSteps());
     document.querySelectorAll("#x-rout .ar-node").forEach((n) => n.classList.toggle("dim", !nav.has(+n.dataset.i)));
-    const c = q("#ar-count"); if (c) c.textContent = `${nav.size - 1} of ${X.rp.steps.length - 1} events`;
+    const c = q("#ar-count"); if (c) c.textContent = `${nav.size - 1} of ${X.rp.steps.length - 1} events${X.rq.flight ? ` (${X.rq.flight})` : ""}`;
   }
   function goStep(d) {
     const nav = navSteps(), after = d > 0 ? nav.find((i) => i > X.step) : [...nav].reverse().find((i) => i < X.step);

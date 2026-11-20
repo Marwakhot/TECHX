@@ -387,7 +387,7 @@ def view(fid):
             "alerts": [i for i in items if i["guard_status"] == "BLOCKED" and i["status"] in ("UNCONFIRMED", "CONFIRMED", "BLOCKED")],
             "report": {**json.loads(rep["data"]), "generated": rep["ts"]} if rep else None,
             "demo_calls": [{"id": c["id"], "title": c["title"], "lines": [{"speaker": who, "role": role, "text": resolve(t)} for who, role, t in c["lines"]]}
-                           for c in DEMO_CALLS if not c["preload"]]}
+                           for c in DEMO_CALLS if not c["preload"] and c.get("flight", "EK812") == fid]}  # each live call belongs to its flight
 
 
 def _status(items):

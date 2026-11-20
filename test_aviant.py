@@ -34,7 +34,7 @@ def decide(actions, chaos=False):
 
 
 def test_scenario_shape():
-    assert len(S.list_flights()) == 11
+    assert len(S.list_flights()) == 12  # 11 + AZ410, the live-demo flight
     d = state()
     k = d["kpis"]
     assert (k["connecting"], k["at_risk"], k["vulnerable_at_risk"], k["crew_illegal"]) == (280, 45, 12, 6)

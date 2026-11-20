@@ -100,8 +100,9 @@ def compare(fid, priorities, regenerate=False, narrate=True):
              "revised_from": s.get("revised_from"),
              "kpis": s["kpis"],
              "best": [k for k, _ in COMPARE_KEYS if s["ok"] and s["kpis"][k] == best.get(k)]} for s in lab["scenarios"]]
-    res = {"priorities": lab["priorities"], "scenario_source": lab["source"], "rows": rows, "recommended": rows[0]["title"] if rows and rows[0]["ok"] else None}
-    if not narrate:
+    res = {"priorities": lab["priorities"], "scenario_source": lab["source"], "rows": rows, "on_time": bool(lab.get("on_time")),
+           "recommended": rows[0]["title"] if rows and rows[0]["ok"] else None}
+    if not narrate or not rows:
         return res
     try:
         res["narrative"] = agent.explain("scenario_comparison", {"priorities": lab["priorities"], "ranked_by_code": [

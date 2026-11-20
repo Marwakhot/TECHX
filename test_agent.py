@@ -40,7 +40,7 @@ def test_first_tick_plans_every_disrupted_flight_without_alerts(monkeypatch):
     f, _ = fake_llm()
     monkeypatch.setattr(agent, "llm_json", f)
     r = monitor.tick(force=True)
-    assert r["watched"] == 11 and "EK812" in {x["flight_id"] for x in r["replanned"]}
+    assert r["watched"] == 12 and "EK812" in {x["flight_id"] for x in r["replanned"]}
     assert S.cached_report("EK812")["suggestions"]
     assert not notifications()  # baseline is not an alert
     assert monitor.tick(force=True)["replanned"] == []  # nothing changed -> nothing to do
@@ -102,7 +102,7 @@ def test_status_and_rebook_needs_pin(monkeypatch):
     monkeypatch.setattr(agent, "llm_json", f)
     monitor.tick(force=True)
     st = monitor.status()
-    assert st["watched_flights"] == 11 and st["events"]
+    assert st["watched_flights"] == 12 and st["events"]
     with pytest.raises(PermissionError):
         S._check_pin("x", "definitely-wrong-pin")
 

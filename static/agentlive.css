@@ -1,0 +1,67 @@
+/* Live agent activity strip on a flight's live report (agentlive.js). Every rule is scoped to .al so nothing else changes. */
+.al { margin:28px 0 8px; padding:18px 0 14px; border-top:2px solid var(--accent); border-bottom:1px solid var(--line-2); }
+.al-h { display:flex; align-items:center; gap:10px; font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+.al-h b { color:var(--ink); font-weight:700; }
+.al-f { font-family:var(--mono); letter-spacing:0; color:var(--ink); }
+.al-t { margin-left:auto; font-family:var(--mono); letter-spacing:0; font-weight:500; text-transform:none; }
+.al-dot { width:9px; height:9px; border-radius:50%; background:var(--ok); }
+.al.on .al-dot { background:var(--accent); box-shadow:0 0 0 0 #c2703d88; animation:al-pulse 1.6s infinite; }
+@keyframes al-pulse { 70% { box-shadow:0 0 0 9px #c2703d00; } 100% { box-shadow:0 0 0 0 #c2703d00; } }
+.al .al-x { background:transparent; border:0; color:var(--muted); font-size:20px; line-height:1; padding:2px 6px; border-radius:6px; }
+.al .al-x:hover { background:var(--panel-2); color:var(--ink); border:0; }
+.al-q { margin:10px 0 4px; font-size:15px; color:var(--ink); font-style:italic; }
+.al-q span { font-style:normal; color:var(--muted); font-size:13px; }
+.al-steps { list-style:none; margin:10px 0 0; padding:0; }
+.al-s { position:relative; display:grid; grid-template-columns:22px 1fr auto; gap:12px; align-items:start; padding:9px 0; }
+.al-s + .al-s::before { content:""; position:absolute; left:10px; top:-9px; height:18px; border-left:1px solid var(--line-2); }
+.al-s > div { display:flex; flex-wrap:wrap; column-gap:12px; row-gap:2px; align-items:baseline; min-width:0; }
+.al-s b { flex:0 0 150px; font-size:14px; font-weight:700; }
+.al-s span { flex:1 1 300px; font-size:14.5px; line-height:1.45; }
+.al-s small { flex-basis:100%; margin-left:162px; font-size:12px; color:var(--muted); }
+.al-s time { font-family:var(--mono); font-size:12px; color:var(--muted); padding-top:2px; }
+.al-s > i { width:20px; height:20px; border-radius:50%; border:1.5px solid var(--line-2); background:var(--deep-1); display:grid; place-items:center;
+  font:700 12px/1 var(--font); font-style:normal; color:#fff8ed; position:relative; z-index:1; }
+.al-s.al-wait { opacity:.45; }
+.al-s.al-run > i { border-color:var(--accent); border-right-color:transparent; animation:al-spin .8s linear infinite; }
+.al-s.al-run span { color:var(--muted); }
+.al-s.al-ok > i { background:var(--ok); border-color:var(--ok); } .al-s.al-ok > i::after { content:"✓"; }
+.al-s.al-skip > i { background:var(--panel-2); } .al-s.al-skip > i::after { content:"–"; color:var(--muted); }
+.al-s.al-skip span { color:var(--muted); }
+.al-s.al-warn > i { background:var(--warn); border-color:var(--warn); } .al-s.al-warn > i::after { content:"!"; }
+.al-s.al-bad > i { background:var(--bad); border-color:var(--bad); } .al-s.al-bad > i::after { content:"✕"; }
+@keyframes al-spin { to { transform:rotate(360deg); } }
+.al-foot { margin-top:10px; padding-top:10px; border-top:1px solid var(--line); font-size:14px; }
+.al-foot.bad { color:var(--bad); }
+@media (max-width:700px) { .al-s b { flex-basis:100%; } .al-s small { margin-left:0; } }
+@media (prefers-reduced-motion:reduce) { .al.on .al-dot, .al-s.al-run > i { animation:none; } }
+
+/* "What the agent did" panel on the Crew, Connecting passengers and Maintenance pages (AgentPanel in agentlive.js). */
+.al-panel { margin:22px 0 26px; padding:14px 0 12px; border-top:2px solid var(--accent); border-bottom:1px solid var(--line-2); }
+.al-panel > summary { list-style:none; display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; cursor:pointer; }
+.al-panel > summary::-webkit-details-marker { display:none; }
+.al-panel > summary b { font-size:18px; font-stretch:118%; letter-spacing:-.04em; }
+.al-panel .al-dot { background:var(--accent); }
+.al-tag { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; padding:3px 9px; border-radius:999px; background:var(--panel-2); color:var(--ink); }
+.al-tag.g { background:#2c7a4920; color:var(--ok); } .al-tag.r { background:#b3362a20; color:var(--bad); }
+.al-when { font-family:var(--mono); font-size:12px; color:var(--muted); }
+.al-chev { margin-left:auto; width:9px; height:9px; border-right:2px solid var(--muted); border-bottom:2px solid var(--muted); transform:rotate(45deg); transition:transform .2s; }
+.al-panel[open] .al-chev { transform:rotate(-135deg); }
+.al-lead { margin:12px 0 4px; font-size:17px; line-height:1.5; max-width:95ch; }
+.al-trig { margin:0 0 6px; font-size:14px; color:var(--muted); }
+.al-trig span { font-family:var(--mono); font-size:12px; margin-right:6px; color:var(--ink); }
+.al-cols { display:grid; grid-template-columns:minmax(0, 3fr) minmax(0, 2fr); gap:28px; margin-top:12px; }
+.al-cols h4 { margin:0 0 6px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+.al-dec, .al-rec, .al-find { list-style:none; margin:0; padding:0; }
+.al-dec li { position:relative; padding:8px 70px 8px 0; border-top:1px solid var(--line); font-size:14.5px; }
+.al-dec li b { font-weight:700; } .al-dec li span { color:var(--ink); }
+.al-dec li p { margin:2px 0 0; font-size:13.5px; color:var(--muted); line-height:1.45; }
+.al-dec li em { position:absolute; right:0; top:9px; font-style:normal; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+.al-dec li.hold b::before { content:"HOLD "; font-size:11px; color:var(--accent); letter-spacing:.04em; }
+.al-dec li.off { opacity:.6; }
+.al-more, .al-none { margin:8px 0 0; font-size:14px; color:var(--muted); }
+.al-find li { margin-top:8px; font-size:14px; color:var(--bad); }
+.al-rec li { display:grid; grid-template-columns:44px 1fr; gap:8px; padding:8px 0; border-top:1px solid var(--line); font-size:14px; line-height:1.45; }
+.al-rec time { font-family:var(--mono); font-size:12px; color:var(--muted); padding-top:2px; }
+.al-rec small { display:block; font-size:12px; color:var(--muted); }
+.al-note { margin:12px 0 0; font-size:12.5px; color:var(--muted); }
+@media (max-width:900px) { .al-cols { grid-template-columns:1fr; gap:14px; } }

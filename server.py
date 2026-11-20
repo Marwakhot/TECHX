@@ -17,6 +17,7 @@ import redteam
 import replay
 import seed
 import services as S
+import specialists
 import whatif
 from guards import GuardViolation
 
@@ -30,7 +31,8 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/decisionlog.js": ("decisionlog.js", "text/javascript"), "/decisionlog.css": ("decisionlog.css", "text/css"),
          "/paximpact.js": ("paximpact.js", "text/javascript"), "/paximpact.css": ("paximpact.css", "text/css"),
          "/surfaces.css": ("surfaces.css", "text/css"), "/retro.css": ("retro.css", "text/css"),
-         "/flightmap.js": ("flightmap.js", "text/javascript"), "/curveballs.js": ("curveballs.js", "text/javascript")}
+         "/flightmap.js": ("flightmap.js", "text/javascript"), "/curveballs.js": ("curveballs.js", "text/javascript"),
+         "/agentlive.js": ("agentlive.js", "text/javascript"), "/agentlive.css": ("agentlive.css", "text/css")}
 BIG_POST = {"/api/ledger/transcribe": 8_500_000}  # base64 audio; every other POST stays capped at 64 KB
 ASSET = re.compile(r"/(jet|globe)/[a-z0-9-]{1,40}\.(webp|svg)")  # intro + globe images: fixed folders, strict names, no traversal
 FID = r"(?P<fid>[A-Z0-9]{2,8})"
@@ -39,22 +41,27 @@ CSP = ("default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-sr
        "font-src https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'")
 GET = {"/api/flights": lambda: S.list_flights(), f"/api/flight/{FID}": S.get_turnaround_and_crew_state,
        f"/api/report/{FID}": agent.get_report, "/api/decisions": lambda: S.decisions(),
-       f"/api/ledger/{FID}": ledger.view, "/api/replay": lambda: replay.run(),
-       "/api/maintenance": lambda: S.maintenance_queue(), "/api/redteam/history": lambda: redteam.history(),
-       f"/api/pax/{FID}": pax_impact.analyse, "/api/calls": lambda: decisions.calls(), f"/api/calls/{CID}/transcript": decisions.transcript,
+       f"/api/ledger/{FID}": ledger.view, "/api/replay": lambda: replay.run(), f"/api/replay/{FID}": replay.run,  # per flight: its events + its figures per stage
+       # the three pages read their specialist agent's picks (specialists.py) next to the deterministic data
+       "/api/maintenance": lambda: specialists.maintenance_view(), "/api/redteam/history": lambda: redteam.history(),
+       f"/api/pax/{FID}": specialists.pax_view, f"/api/agents/{FID}/crew": specialists.crew_view, f"/api/agents/{FID}": specialists.team,
+       "/api/calls": lambda: decisions.calls(), f"/api/calls/{CID}/transcript": decisions.transcript,
        "/api/ledger/decisions": lambda: decisions.list_decisions(), f"/api/ledger/decisions/{DID}": decisions.detail,
        "/api/llm": lambda: {"model": agent.MODEL, "key_configured": bool(os.getenv("OPENROUTER_API_KEY"))},
        # Autonomous agent: status is cheap (use it for health checks); tick runs one monitoring pass (point an uptime pinger
        # at it on Vercel, where no background thread survives between requests). Ticks are rate-limited to one per 10 s.
        "/api/agent/status": lambda: monitor.status(), "/api/agent/tick": lambda: monitor.tick(), "/api/health": lambda: {"ok": True},
+       # the live report follows the agents responding to a call saved on it (events after `since` + run status)
+       f"/api/agent/live/{FID}/(?P<since>\\d{{1,9}})": monitor.live,
        f"/api/cb/{FID}": curveballs.view,  # U-4 curveballs
        f"/api/hub/{FID}": S.hub_status}  # Decision hub: every decision for a flight, from any tab
 POST = {
     "/api/report": lambda b: agent.get_report(b["flight_id"], force=True),
-    "/api/comms": lambda b: S.log_call(b["flight_id"], b.get("speaker"), b["text"]),
+    # a call saved on the live report: stored, then the agents start on it at once (monitor.call_logged)
+    "/api/comms": lambda b: monitor.call_logged(b["flight_id"], b.get("speaker"), b["text"]),
     "/api/lab": lambda b: agent.scenario_lab(b["flight_id"], b.get("priorities"), bool(b.get("regenerate"))),
     "/api/decide": lambda b: S.decide(b["flight_id"], b.get("title", "Decision"), b["actions"], b.get("controller"), b.get("pin"),
-                                      b.get("chaos") if b.get("chaos") in ("seat", "bag") else bool(b.get("chaos"))),
+                                      b.get("chaos") if b.get("chaos") in ("seat", "bag") else bool(b.get("chaos")), b.get("origin")),
     "/api/preview": lambda b: S.preview_passengers(b["flight_id"], b["actions"]),
     "/api/approve": lambda b: S.approve_change(b["id"], b.get("controller"), b.get("pin"), bool(b.get("approve", True))),
     "/api/signoff": lambda b: S.sign_off_maintenance(b["item_id"], b.get("licence")),
