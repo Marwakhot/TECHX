@@ -93,6 +93,7 @@ const PaxImpact = (() => {
   const tabOf = (p) => DONE.includes(bucket(p)) ? "approved" : DECIDE.includes(bucket(p)) || bagIssue(p) || !feas(p).ok ? "decide" : "none";
   // the controller's own edit wins; otherwise the Passenger agent's pick (specialists.py); otherwise the earliest flight
   // that passenger and bags can make. On time: the agents recommend nothing, only the controller's own choice counts.
+  const approvable = (p) => !p.pending && !!chosen(p) && feas(p).ok;  // both checks pass: passenger AND bags make it
   const chosen = (p) => { const a = p.alternatives || []; return a.find((x) => x.flight === P.override[p.ref]) || (P.data.agent?.delayed === false ? undefined
     : a.find((x) => x.flight === p.agent_pick?.flight) || a.find((x) => x.bags_make_it || !p.bags) || a[0]); };
   function conf(p) {
@@ -154,7 +155,7 @@ const PaxImpact = (() => {
     const T = { decide: [], approved: [], none: [] };
     all.forEach((p) => T[tabOf(p)].push(p));
     const reviewed = T.approved.length, totalDec = T.decide.length + reviewed;
-    const easy = T.decide.filter((p) => conf(p)[0] === "high" && !p.pending && chosen(p) && feas(p).ok);
+    const easy = T.decide.filter(approvable);
     P.tab = P.tab || "decide";
     const tabs = [["decide", "Needs your decision"], ["approved", "Approved"], ["none", "No action needed"]];
     P.root.innerHTML = `
@@ -171,8 +172,8 @@ const PaxImpact = (() => {
         <div><h2>All ${all.length} connecting passengers on ${h(s.flight)}</h2>
           <p class="px2-sub">Click a status to filter the list. Sorted by urgency, vulnerable passengers pinned to the top.</p></div>
         <div class="px2-prog"><span>${reviewed} of ${totalDec} reviewed</span><i><b style="width:${totalDec ? (100 * reviewed) / totalDec : 0}%"></b></i></div>
-        <div class="px2-all"><button class="px2-btn dark" data-approveall="1" ${easy.length ? "" : "disabled"}>Approve all (${easy.length})</button>
-          <small>High-confidence, up-to-date rows only</small></div>
+        <div class="px2-all"><button class="px2-btn dark" data-approveall="1" ${easy.length ? "" : "disabled"}>Review &amp; approve all (${easy.length})</button>
+          <small>Every row where passenger and bags both make it · listed together before you confirm</small></div>
       </header>
       <p class="px2-cap">Passenger status overview</p>
       <div class="px2-ov">
@@ -298,7 +299,11 @@ const PaxImpact = (() => {
     refs = refs.filter((x) => !blocked.includes(x));
     if (blocked.length) toast(`${blocked.length} passenger(s) need review: passenger or baggage cannot make the connection, so approval is blocked`, "warn");
     if (!refs.length) return;
-    askAuth(`Approve rebooking for ${refs.length} passenger(s)<div class="small muted" style="margin-top:6px">Enter your name and controller PIN. The rebooking is checked by the guards and applied at once.</div>`, async (a) => {
+    const list = refs.length > 1 ? `<ul class="small" style="max-height:260px;overflow:auto;margin:8px 0 0;padding-left:18px;font-weight:400">${refs.map((x) => {
+      const p = rows[x], c = p && chosen(p);
+      return `<li>${h(x)} · ${h(p?.connecting_flight || "")} → <b>${h(c?.flight || "agent's pick")}</b>${c ? ` · ${c.connection_min} min` : ""}${p?.bags
+        ? ` · ${p.bags} bag(s) make it` : ""}${p && conf(p)[0] !== "high" ? ` · <span class="warn">${h(conf(p)[1].toLowerCase())}</span>` : ""}</li>`; }).join("")}</ul>` : "";
+    askAuth(`Approve rebooking for ${refs.length} passenger(s)${list}<div class="small muted" style="margin-top:6px">Enter your name and controller PIN. The rebooking is checked by the guards and applied at once.</div>`, async (a) => {
       me = a.controller; try { localStorage.setItem("aviant.me", me); } catch { /* ignore */ }
       const r = await api("/api/pax/recommend", { flight_id: S.flight, pax_ids: refs, by: me, overrides: P.override });
       const lines = [];
@@ -327,7 +332,7 @@ const PaxImpact = (() => {
       if (d.close) { P.drawer = null; return render(); }
       if (d.nav) { const ids = visible(curRows()).map((x) => x.ref); P.drawer = ids[ids.indexOf(P.drawer) + +d.nav] || P.drawer; return render(); }
       if (d.edit) { const r = q(`tr[data-row="${CSS.escape(P.drawer)}"] select`, P.root); P.drawer = null; render(); return q(`tr[data-row="${CSS.escape(r?.dataset.alt || "")}"] select`, P.root)?.focus(); }
-      if (d.approveall) { const refs = curRows().filter((p) => conf(p)[0] === "high" && !p.pending && chosen(p) && feas(p).ok).map((p) => p.ref);
+      if (d.approveall) { const refs = curRows().filter(approvable).map((p) => p.ref);
         return send(refs).catch((err) => toast(err.message, "bad")); }
       if (d.sendone && d.next) { const ids = visible(curRows()).map((x) => x.ref); P.drawer = ids[ids.indexOf(d.sendone) + 1] || null; }
       else if (d.sendone) P.drawer = null;
