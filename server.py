@@ -92,7 +92,7 @@ POST = {
     "/api/notify/send": lambda b: S.send_pax_messages(b["flight_id"], b.get("messages"), b.get("controller"), b.get("pin")),
     # direct atomic rebooking commits passenger moves, so it needs the controller name + PIN like every other commit
     "/api/rebook": lambda b: S.execute_atomic_passenger_rebook(b["flight_id"], None, b.get("chaos") if b.get("chaos") in ("seat", "bag") else False,
-                                                               S._check_pin(b.get("controller"), b.get("pin"))),
+                                                               approved_by=S._check_pin(b.get("controller"), b.get("pin"))),
     # U-4 curveballs (curveballs.py): batched rebooking, crew-channel messages, validated sign-offs, bag-plan rebook
     "/api/cb/batch-rebook": lambda b: curveballs.batch_rebook(b["flight_id"], b.get("controller"), b.get("pin"), b.get("chaos_batch"),
                                                              bool(b.get("chaos_repeat"))),
@@ -121,7 +121,9 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(403, {"error": str(e)})
         except agent.LLMUnavailable as e:
             self.reply(503, {"error": f"{e}. This feature needs the LLM; nothing was faked."})
-        except (GuardViolation, ValueError, KeyError, TypeError) as e:
+        except KeyError as e:  # a required body field is missing (str(KeyError) would only say "'flight_id'")
+            self.reply(400, {"error": f"Missing or unknown field: {e.args[0] if e.args else ''}"})
+        except (GuardViolation, ValueError, TypeError) as e:
             self.reply(400, {"error": str(e)})
         except Exception:  # noqa: BLE001 - never leak internals to the client
             traceback.print_exc()

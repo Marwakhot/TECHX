@@ -75,6 +75,8 @@ REPORT_SYSTEM = """You are the Aviant Decision Ledger reporter. You receive ledg
 human-confirmation status and the deterministic guard result. Write the controller's report.
 Rules: only use facts in the items. Item status meanings: EXECUTED = applied after controller approval (done);
 CONFIRMED = a human verified it was said, but it is NOT executed yet; UNCONFIRMED = not yet verified by a human (say so);
+REJECTED = rejected (by the controller, or as wrongly captured) and ROLLED_BACK = approved but undone because applying it failed:
+neither is done;
 BLOCKED / guard_status BLOCKED = refused by the safety guards (report as blocked, never as done). Never describe anything
 as done, managed or resolved unless its status is EXECUTED. Next steps must only cover work that is not EXECUTED yet.
 Return ONLY JSON: {"executive_summary":"max 110 words","problems":[{"problem":"label","status":"OPEN|DECIDED|BLOCKED|DONE",
@@ -370,8 +372,8 @@ def view(fid):
         rep = S.one(con, "SELECT * FROM ledger_reports WHERE flight_id = ?", (fid,))
     for i in items:
         i["actions"], i["flags"] = json.loads(i["actions"] or "[]"), json.loads(i["flags"] or "[]")
-        if i["change_status"] == "APPROVED":
-            i["status"] = "EXECUTED"  # approved in the controller gate = applied atomically
+        if i["change_status"] in ("APPROVED", "REJECTED", "ROLLED_BACK"):  # the controller gate's outcome, as the Decision log shows it
+            i["status"] = {"APPROVED": "EXECUTED", "REJECTED": "REJECTED", "ROLLED_BACK": "ROLLED_BACK"}[i["change_status"]]
     for c in calls:
         c["lines"] = [ln for ln in lines if ln["call_id"] == c["id"]]
     board = {}
@@ -393,12 +395,12 @@ def view(fid):
 def _status(items):
     """Problem status is a fact, so code derives it from item statuses instead of trusting the LLM's wording."""
     decs = [i for i in items if i["kind"] == "DECISION"]
-    live = [i for i in decs if i["guard_status"] != "BLOCKED" and i["status"] != "REJECTED"]
+    live = [i for i in decs if i["guard_status"] != "BLOCKED" and i["status"] not in ("REJECTED", "ROLLED_BACK")]
     if any(i["status"] == "EXECUTED" for i in decs):
         return "DONE" if all(i["status"] == "EXECUTED" for i in live) else "IN PROGRESS"
     if any(i["status"] == "CONFIRMED" for i in live):
         return "DECIDED"
-    if decs and not live:
+    if not live and any(i["guard_status"] == "BLOCKED" for i in decs):
         return "BLOCKED"
     return "OPEN"
 

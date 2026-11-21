@@ -23,7 +23,8 @@ RULES = {  # thresholds used for labels; shown to the user, change here
     "STALE_AFTER_MIN": 30,        # flag data that has not been updated for this long while the disruption is active
 }
 MCT_SOURCE = (f"FRA hub minimum connection time {G.LIMITS['MCT_MIN']} min (Aviant guard rule). No airport- or itinerary-specific MCT "
-              f"table (e.g. Schengen / non-Schengen) is configured, so the hub rule is applied to every connection.")
+              f"table (e.g. Schengen / non-Schengen) is configured, so the hub rule is applied to every connection. A passenger already "
+              f"moved by an approved rebooking may keep a connection of {G.LIMITS['REBOOKED_MCT_MIN']} min or more.")
 ASSIST = {"UM": "Unaccompanied minor", "PRM": "Reduced mobility assistance", "MEDICAL": "Medical assistance", "INFANT": "Travelling with an infant",
           "ELDERLY": "Elderly passenger assistance"}
 PRIO_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Unknown": 4}
@@ -38,16 +39,30 @@ def _mask(name):
 
 
 def _approved_moves(con):
-    """Passenger -> human-approved booking, from the append-only audit log (the only proof a passenger is 'Rebooked')."""
-    proof, unapproved = {}, {}
-    for r in S.rows(con, "SELECT id, ts, actor, action, detail FROM audit WHERE action IN ('CHANGE_APPROVED', 'REBOOK_COMMIT') ORDER BY id"):
+    """Passenger -> human-approved booking, from the append-only audit log (the only proof a passenger is 'Rebooked').
+    Proof = a move made with a named controller's PIN: an approved decision (CHANGE_APPROVED), the direct atomic rebooking
+    with its approver recorded (REBOOK_COMMIT via POST /api/rebook) and the Curveballs batch / single rebooking
+    (CB_BATCH_COMMIT / CB_REBOOK_COMMIT)."""
+    proof = {}
+    for r in S.rows(con, "SELECT id, ts, actor, action, detail FROM audit WHERE action IN "
+                         "('CHANGE_APPROVED', 'REBOOK_COMMIT', 'CB_BATCH_COMMIT', 'CB_REBOOK_COMMIT') ORDER BY id"):
         d = json.loads(r["detail"] or "{}")
-        for p in d.get("rebooked_pax", []):
-            if r["action"] == "CHANGE_APPROVED":
-                proof[p] = {"change_id": d.get("id"), "approved_by": r["actor"], "at": r["ts"], "audit_id": r["id"]}
-            else:
-                unapproved[p] = {"actor": r["actor"], "at": r["ts"], "audit_id": r["id"]}
-    return proof, unapproved
+        if r["action"] == "REBOOK_COMMIT" and not d.get("approved_by"):
+            continue  # a system rebooking without a named controller's PIN approval is no proof
+        moved = d.get("rebooked_pax") if r["action"] in ("CHANGE_APPROVED", "REBOOK_COMMIT") else [m.get("pax_id") for m in d.get("moves", [])]
+        for p in moved or []:
+            proof[p] = {"change_id": d.get("id") if r["action"] == "CHANGE_APPROVED" else None, "approved_by": r["actor"],
+                        "at": r["ts"], "audit_id": r["id"]}
+    return proof
+
+
+def _forwarded_bags(con):
+    """Passenger -> (their flight, the later flight their checked bags are routed on) from the latest Curveballs bag plan,
+    when that plan forwards the bags."""
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE name = 'cb_bag_plans'").fetchone():
+        return {}
+    return {r["pax_id"]: (r["pax_flight"], r["bag_flight"]) for r in S.rows(
+        con, "SELECT pax_id, pax_flight, bag_flight FROM cb_bag_plans WHERE plan = 'FORWARD' AND id IN (SELECT MAX(id) FROM cb_bag_plans GROUP BY pax_id)")}
 
 
 def _pending(con, fid):
@@ -70,13 +85,14 @@ def analyse(fid):
     with closing(S.connect()) as con:
         info = S.one(con, "SELECT * FROM flight_info WHERE flight_id = ?", (fid,))
         meta = S.one(con, "SELECT value FROM meta WHERE key = 'seeded_at'")
-        last = S.one(con, "SELECT MAX(ts) AS ts FROM audit WHERE action IN ('CHANGE_APPROVED','REBOOK_COMMIT','MAINTENANCE_SIGNED','TASK_DONE','ETA_UPDATED')")
+        last = S.one(con, "SELECT MAX(ts) AS ts FROM audit WHERE action IN ('CHANGE_APPROVED','REBOOK_COMMIT','MAINTENANCE_SIGNED','TASK_DONE',"
+                          "'ETA_UPDATED','CB_BATCH_COMMIT','CB_REBOOK_COMMIT','CB_SIGNOFF_VALID')")
         flights = {x["id"]: x for x in S.rows(con, S.F_SQL)}
-        proof, unapproved = _approved_moves(con)
+        proof, forwarded = _approved_moves(con), _forwarded_bags(con)
         pend, pend_all = _pending(con, fid)
         bags = {b["pax_id"]: b for b in S.rows(con, "SELECT pax_id, COUNT(*) AS n, GROUP_CONCAT(DISTINCT flight_id) AS on_flights, "
                                                     "GROUP_CONCAT(DISTINCT status) AS status FROM bags GROUP BY pax_id")}
-    inb_eff, mct = f["eff"], RULES["MCT_MIN"]
+    inb_eff = f["eff"]
     need_bag = d["kpis"]["bag_mct"]  # bag minimum connection time incl. remote-stand penalty (code)
     alts_by_dest = {}
     for p in d["passengers"]:
@@ -85,7 +101,7 @@ def analyse(fid):
     conflicts, out = [], []
     for p in d["passengers"]:
         onward = flights.get(p["onward"])
-        orig = flights.get(p["orig_flight"]) if p["orig_flight"] else None
+        mct = p["min_conn"]  # the hub MCT, or the shorter minimum a passenger already rebooked by an approved decision may keep
         row = {"ref": p["id"], "name_masked": _mask(p["name"]), "final_destination": p["dest"], "connecting_flight": p["onward"],
                "assistance": p["tier"] in G.VULNERABLE, "priority_category": "Protected (care)" if p["tier"] in G.VULNERABLE else "Standard",
                "mct_min": mct, "bags": p["bags"], "missing": [], "factors": []}
@@ -99,11 +115,11 @@ def analyse(fid):
         row.update(available_min=avail, departs_in_min=dep_in, departure_sched=_clock(base, onward["t_min"]),
                    departure_est=_clock(base, onward["eff"]), departure_iso=(base + timedelta(minutes=onward["eff"])).isoformat(timespec="seconds"),
                    onward_delay_min=onward["delay_min"])
-        moved = p["orig_flight"] and p["onward"] != p["orig_flight"]
+        moved = bool(p["orig_flight"]) and p["onward"] != p["orig_flight"]
         alts = [a for a in alts_by_dest.get(p["dest"], {}).values() if a["id"] != p["onward"]]
         seats = sum(a["free"] for a in alts)
         # ---- status (deterministic) ----
-        if moved and p["id"] in proof:
+        if moved and p["id"] in proof and avail >= mct:  # rebooked, and the new connection still works
             status = "Rebooked"
         elif dep_in <= 0 and avail < mct:
             status = "Confirmed missed"
@@ -122,7 +138,8 @@ def analyse(fid):
         # ---- explanation factors ----
         F = row["factors"]
         F.append(f"{fid} estimated on-block {_clock(base, inb_eff)} (scheduled {_clock(base, f['t_min'])}, {f['delay_min']} min late) · predicted")
-        F.append(f"Available connection {avail} min vs {mct} min MCT " + (f"({mct - avail} min short)" if avail < mct else f"({avail - mct} min spare)"))
+        F.append(f"Available connection {avail} min vs {mct} min " + ("minimum for a rebooked connection " if moved else "MCT ")
+                 + (f"({mct - avail} min short)" if avail < mct else f"({avail - mct} min spare)"))
         F.append(f"{p['onward']} departs {_clock(base, onward['eff'])}" + (" (already departed)" if dep_in <= 0 else f", in {dep_in} min"))
         hold_needed = mct - avail
         holdable = onward["kind"] == "ONWARD" and 0 < hold_needed <= RULES["MAX_ONWARD_HOLD_MIN"] and dep_in > 0
@@ -135,11 +152,16 @@ def analyse(fid):
                      else f"No alternative seats to {p['dest']} in the schedule: overnight stay and compensation likely")
         if row["assistance"]:
             F.append("Special assistance recorded (details restricted): protected-priority passenger")
-        if p["bags"]:
+        plan = forwarded.get(p["id"])
+        fwd = plan[1] if p["bags"] and plan and plan[0] == p["onward"] else None  # only while they are on the flight the plan was made for
+        if fwd:
+            F.append(f"{p['bags']} checked bag(s) miss {p['onward']} and are routed on {fwd} to {p['dest']}, then delivered to the passenger")
+        elif p["bags"]:
             F.append(f"{p['bags']} checked bag(s); bag transfer needs {need_bag} min" + ("" if avail >= need_bag or status == "Rebooked" else " (bags may not make it)"))
-        if status == "Rebooked":
+        if moved and p["id"] in proof:
             pr = proof[p["id"]]
-            F.insert(0, f"Rebooked from {p['orig_flight']} onto {p['onward']}, approved by {pr['approved_by']} (decision #{pr['change_id']}, audit #{pr['audit_id']})")
+            F.insert(0, f"Rebooked from {p['orig_flight']} onto {p['onward']}, approved by {pr['approved_by']} ("
+                        + (f"decision #{pr['change_id']}, " if pr["change_id"] else "") + f"audit #{pr['audit_id']})")
         # ---- priority (deterministic, explainable) ----
         if status in ("Safe connection", "Rebooked"):
             prio, why = "Low", "connection remains feasible" if status != "Rebooked" else "rebooked with a human-approved booking"
@@ -165,6 +187,7 @@ def analyse(fid):
                             {"flight": p["onward"], "route": f"FRA → {p['dest']}", "sched": _clock(base, onward["t_min"]), "est": _clock(base, onward["eff"]),
                              "kind": "current onward" + (f" (originally {p['orig_flight']})" if moved else "")}]
         row["bag_location"] = b["on_flights"] if b else None
+        row["bag_forwarded"] = fwd  # the later flight the bags travel on (Curveballs bag plan), else None
         out.append(row)
     out.sort(key=lambda r: (PRIO_ORDER[r["priority"]], r["departs_in_min"] if r["departs_in_min"] is not None else 9999, r["ref"]))
 

@@ -3,7 +3,6 @@ back; the LLM only narrates the result."""
 from contextlib import closing
 
 import agent
-import guards as G
 import services as S
 
 KPI_KEYS = ("eta", "at_risk", "vulnerable_at_risk", "crew_illegal", "crew_min_margin", "open_nogo", "off_block", "turn_gap",
@@ -55,8 +54,9 @@ def run(fid, params, actions=None, narrate=True):
             inb = S._inbound(con, fid)
             out = S._get(con, "flights", inb["next_leg"], "flight")
             after = _pick(S._kpis(con, fid))
-            crew = [{"id": c["id"], "role": c["role"], "margin": S.MAX - G.projected_fdp(c, out),
-                     "legal_standby": [s["id"] for s in S._standby_options(con, c, out)]} for c in S._rotation(con, inb)]
+            slip = S._departure_slip(con, inb, out)  # crew judged at the real departure, as on every other page
+            crew = [{"id": c["id"], "role": c["role"], "margin": S.crew_margin(c, out, slip),
+                     "legal_standby": [s["id"] for s in S._standby_options(con, c, out, slip)]} for c in S._rotation(con, inb)]
             plan = {"actions": actions, "ok": None, "reason": "", "kpis": None}
             if actions:
                 try:

@@ -11,7 +11,7 @@ from datetime import datetime
 
 import agent
 import services as S
-from guards import VULNERABLE
+from guards import ENGINEER_TYPES, VULNERABLE
 
 APPROVAL_KINDS = {"DELAY", "GATE_CHANGE", "CREW_SWAP", "CREW_AUTOSWAP", "DEPARTURE_RELEASE"}  # network schedule, gate or crew changes
 ACTION_CATEGORY = {"CREW_SWAP": "crew", "CREW_AUTOSWAP": "crew", "ASSIGN_ENGINEER": "maintenance", "REBOOK": "passengers",
@@ -31,6 +31,7 @@ CODES = [
     (r"PRIORITY: vulnerable passengers \[(.*?)\]", "VULNERABLE_PRIORITY", lambda m: f"{len(m[1].split(','))} vulnerable passengers would be skipped"),
     (r"HOLD: (\S+) may be held at most (\d+) min \(asked (\d+)\)", "ONWARD_HOLD_CAP", lambda m: f"{m[1]}: {m[3]} min asked, {m[2]} min max"),
     (r"BAG MATCH: (\d+)", "BAG_MATCH", lambda m: f"{m[1]} bag(s) would fly without their passenger"),
+    (r"ENGINEER LICENCE: (\S+) is not licensed for the (\S+)", "ENGINEER_NOT_LICENSED", lambda m: f"{m[1]} is not licensed for the {m[2]}"),
     (r"Gate (\S+) is occupied by (\S+)", "GATE_OCCUPIED", lambda m: f"{m[1]} is occupied by {m[2]}"),
     (r"No legal standby (\S+)", "NO_LEGAL_STANDBY", lambda m: f"no legal standby {m[1]}"),
     (r"(\S+) is (?:not on standby|\d+ min away|\S+, cannot replace)", "STANDBY_NOT_LEGAL", lambda m: f"{m[1]} cannot be used"),
@@ -55,6 +56,7 @@ def legal_fix(fid, actions):
     refused it, dry-running after each step (rolled back), until the guards pass or no fix exists."""
     d = S.get_turnaround_and_crew_state(fid)
     out_id, cur, steps = d["outbound"]["id"], [dict(a) for a in actions], []
+    licensed = [e["id"] for e in d["engineers"] if d["flight"]["aircraft_type"] in ENGINEER_TYPES.get(e["id"], ())]
     for _ in range(4):
         sim = S.simulate(fid, cur)
         if sim["ok"]:
@@ -73,10 +75,14 @@ def legal_fix(fid, actions):
             if not any(a["kind"] == "DELAY" and a.get("flight_id") == out_id for a in nxt):
                 nxt.append({"kind": "DELAY", "flight_id": out_id, "minutes": min(gap, 240)})
             for m in open_nogo:
-                if m["status"] == "OPEN" and not any(a["kind"] == "ASSIGN_ENGINEER" for a in nxt):
-                    nxt.append({"kind": "ASSIGN_ENGINEER", "item_id": m["id"], "engineer_id": d["engineers"][0]["id"]})
+                if m["status"] == "OPEN" and licensed and not any(a["kind"] == "ASSIGN_ENGINEER" for a in nxt):
+                    nxt.append({"kind": "ASSIGN_ENGINEER", "item_id": m["id"], "engineer_id": licensed[0]})
             why = (f"Do not release yet: retime {out_id} +{min(gap, 240)} min and get {', '.join(m['id'] for m in open_nogo)} signed off by a licensed "
                    f"engineer; release afterwards")
+        elif code == "ENGINEER_NOT_LICENSED" and licensed:
+            nxt = [{**a, "engineer_id": licensed[0]} if a["kind"] == "ASSIGN_ENGINEER" and a.get("engineer_id") not in licensed else a
+                   for a in cur]
+            why = f"Assign an engineer licensed for the {d['flight']['aircraft_type']} ({licensed[0]})"
         elif code == "VULNERABLE_PRIORITY":
             nxt = [a for a in cur if a["kind"] not in ("REBOOK_TIERS", "REBOOK")] + [{"kind": "REBOOK_AT_RISK", "flight_id": fid}]
             why = "Rebook every at-risk passenger in one batch; code puts unaccompanied minors, PRM and medical passengers first"

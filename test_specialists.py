@@ -169,9 +169,11 @@ def test_no_go_item_never_left_without_engineer_for_a_deferrable_one(monkeypatch
         con.execute("UPDATE flights SET delay_min = 60 WHERE id = 'AZ410'")  # a third NO-GO (M-6) competes for 3 engineers
     f = SP.mx_facts()
     nogo, defer = [i for i in f["items"] if i["blocks_departure"]], [i for i in f["items"] if not i["blocks_departure"]]
-    eng = [o["id"] for o in f["items"][0]["options"]]
-    fake_llm(monkeypatch, {SP.MX_SYSTEM: {"picks": [{"item_id": nogo[0]["id"], "engineer_id": eng[0], "reason": "x"},
-                                                    {"item_id": defer[0]["id"], "engineer_id": eng[2], "reason": "x"}]}})
+    first = nogo[0]["options"][0]["id"]  # options list only engineers licensed for the item's aircraft type
+    # the deferrable item takes an engineer another NO-GO item needs: code must give that engineer back to the NO-GO item
+    shared = next(o["id"] for o in defer[0]["options"] if o["id"] != first and any(o["id"] in {x["id"] for x in n["options"]} for n in nogo[1:]))
+    fake_llm(monkeypatch, {SP.MX_SYSTEM: {"picks": [{"item_id": nogo[0]["id"], "engineer_id": first, "reason": "x"},
+                                                    {"item_id": defer[0]["id"], "engineer_id": shared, "reason": "x"}]}})
     m = SP.maintenance()
     assert len(nogo) == 3 and {p["item_id"] for p in m["picks"]} >= {i["id"] for i in nogo}, m["picks"]
 
@@ -252,7 +254,7 @@ def test_agent_headline_written_by_the_llm_only_when_it_matches_the_plan(monkeyp
 
 def test_llm_reason_shown_only_when_true_to_the_facts(monkeypatch):
     monitor.apply_eta("AZ410", 60, "test")
-    slack = next(o["slack"] for i in SP.mx_facts()["items"] if i["id"] == "M-6" for o in i["options"] if o["id"] == "E1")
+    slack = next(o["slack"] for i in SP.mx_facts()["items"] if i["id"] == "M-6" for o in i["options"] if o["id"] == "E2")  # A320-licensed
     assert slack < 0  # the job ends after AZ411's departure
     for reason, shown in ((f"done {-slack} min before departure, AZ411 stays on time", "rules"),     # wrong direction
                           (f"done {-slack + 25} min after departure so AZ411 slips", "rules"),        # invented number
@@ -260,7 +262,7 @@ def test_llm_reason_shown_only_when_true_to_the_facts(monkeypatch):
         with S.connect() as con:  # forget the cached decision
             con.execute(SP.TABLE)
             con.execute("DELETE FROM agent_proposals")
-        fake_llm(monkeypatch, {SP.MX_SYSTEM: {"picks": [{"item_id": "M-6", "engineer_id": "E1", "reason": reason}]}})
+        fake_llm(monkeypatch, {SP.MX_SYSTEM: {"picks": [{"item_id": "M-6", "engineer_id": "E2", "reason": reason}]}})
         p = next(p for p in SP.maintenance()["picks"] if p["item_id"] == "M-6")
         assert p["by"] == "LLM" and p["reason_by"] == shown, (reason, p)
         assert (p["reason"] == reason) == (shown == "LLM") and ("after departure" in p["reason"])
@@ -276,6 +278,8 @@ def test_llm_reason_shown_only_when_true_to_the_facts(monkeypatch):
 
 def test_shorter_hold_is_a_third_real_option(monkeypatch):
     fake_llm(monkeypatch, {})
+    with closing(S.connect()) as con:  # a shorter hold exists only when bags need longer than passengers: a remote stand (+15 min)
+        con.execute("UPDATE flights SET gate = 'R6' WHERE id = 'AZ411'")
     monitor.apply_eta("AZ410", 60, "test")
     t = SP.team("AZ410")
     h = next(h for h in t["passengers"]["holds"] if h["flight_id"] == "LH1830")

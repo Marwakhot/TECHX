@@ -1,5 +1,6 @@
 """The live-demo workflow on AZ410, end to end, exactly as the presenter runs it (LLM offline: every agent falls back to rules).
 on time -> delay call -> three agents -> maintenance fixed -> hub plan approved -> release -> decision log -> audit replay -> guard attacks."""
+import json
 import time
 
 import pytest
@@ -61,7 +62,8 @@ def test_live_demo_workflow():
     hold = next(h for h in pax["holds"] if h["flight_id"] == "LH1830")
     assert hold["recommended"] and hold["covers_bags"] and hold["minutes"] <= 30 and len(pax["picks"]) == 10
     assert mx["actions"][0]["item_id"] == "M-6" and mx["release_slip_min"] > 0
-    assert len(agent.get_report(FID)["suggestions"]) == 3
+    sug = agent.get_report(FID)["suggestions"]  # each a different plan (bags need 45 min like passengers here: no "shorter hold")
+    assert len(sug) >= 2 and len({json.dumps(s["actions"], sort_keys=True) for s in sug}) == len(sug)
 
     # 3. maintenance page: assign the agent's engineer (PIN), the engineer signs off with their licence
     eng = mx["actions"][0]["engineer_id"]

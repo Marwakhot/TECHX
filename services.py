@@ -22,6 +22,9 @@ MCT, MAX = G.LIMITS["MCT_MIN"], G.LIMITS["MAX_FDP_MIN"]
 F_SQL = "SELECT f.*, f.t_min + f.delay_min AS eff FROM flights f"
 KINDS = ("DELAY", "GATE_CHANGE", "CREW_SWAP", "CREW_AUTOSWAP", "REBOOK", "REBOOK_AT_RISK", "REBOOK_TIERS", "ASSIGN_ENGINEER", "DEPARTURE_RELEASE")
 STATE_TABLES = ("flights", "seats", "bags", "crew", "maintenance", "gates", "tasks")  # what audit replay must reproduce
+# Each passenger's minimum connection (needs aliases p = passengers, s = seats): a passenger already moved by an approved
+# rebooking may keep a connection down to REBOOKED_MCT_MIN; everyone else needs the hub MCT.
+PAX_MIN_SQL = f"(CASE WHEN s.flight_id <> p.orig_flight THEN {G.LIMITS['REBOOKED_MCT_MIN']} ELSE {MCT} END)"
 _pin_failures = 0
 
 
@@ -83,10 +86,20 @@ def _rotation(con, inb):
 
 
 def _at_risk(con, inb):
-    return G.priority_order(rows(con, """
+    return G.priority_order(rows(con, f"""
         SELECT p.id, p.name, p.tier, p.dest, s.flight_id, s.seat_no, f.t_min + f.delay_min AS eff
         FROM passengers p JOIN seats s ON s.pax_id = p.id JOIN flights f ON f.id = s.flight_id
-        WHERE p.inbound = ? AND f.t_min + f.delay_min - ? < ?""", (inb["id"], inb["eff"], MCT)))
+        WHERE p.inbound = ? AND f.t_min + f.delay_min - ? < {PAX_MIN_SQL}""", (inb["id"], inb["eff"])))
+
+
+def crew_margin(member, out, slip=0):
+    """Duty margin left when the outbound REALLY leaves: crew already on duty keep using duty while it slips `slip` min."""
+    return MAX - G.projected_fdp(member, out) - (slip if member["duty_used"] else 0)
+
+
+def _departure_slip(con, inb, out, cp=None):
+    """How much later than scheduled the outbound can really leave: its turnaround (incl. NO-GO work) ends after departure."""
+    return max((cp or _critical_path(con, inb))["off_block"] - out["eff"], 0)
 
 
 def _integrity(con):
@@ -96,14 +109,17 @@ def _integrity(con):
                              "WHERE s.flight_id IS NULL OR s.flight_id <> b.flight_id")}
 
 
-def _standby_options(con, member, out):
+def _standby_options(con, member, out, slip=0):
+    """Legal standby for `member`, closest first; with `slip`, a standby already on duty must also keep the standby buffer
+    once the outbound slips, so a swap stays legal after the outbound is retimed."""
     legal = []
     for s in rows(con, "SELECT * FROM crew WHERE status = 'STANDBY' AND role = ? ORDER BY walk_min", (member["role"],)):
         try:
             G.check_standby(s, member, out)
-            legal.append(s)
         except GuardViolation:
-            pass
+            continue
+        if crew_margin(s, out, slip) >= G.LIMITS["STANDBY_BUFFER_MIN"]:
+            legal.append(s)
     return legal
 
 
@@ -141,14 +157,14 @@ def _eu261(km):
 
 def _delay_cost(con, inb, care_overnight=180, meal=30):
     """Baseline = do nothing (every tight connection misses). Current = the state now in the database."""
-    pax = rows(con, """SELECT o.t_min AS o_dep, o.distance_km AS km, f.t_min + f.delay_min AS now_dep FROM passengers p
-        JOIN flights o ON o.id = p.orig_flight JOIN seats s ON s.pax_id = p.id JOIN flights f ON f.id = s.flight_id
+    pax = rows(con, f"""SELECT o.t_min AS o_dep, o.distance_km AS km, f.t_min + f.delay_min AS now_dep, {PAX_MIN_SQL} AS min_conn
+        FROM passengers p JOIN flights o ON o.id = p.orig_flight JOIN seats s ON s.pax_id = p.id JOIN flights f ON f.id = s.flight_id
         WHERE p.inbound = ? AND o.t_min - ? < ?""", (inb["id"], inb["eff"], MCT))
     base = cur = protected = within_3h = 0
     for p in pax:
         worst = _eu261(p["km"]) + care_overnight
         base += worst
-        if p["now_dep"] - inb["eff"] < MCT:
+        if p["now_dep"] - inb["eff"] < p["min_conn"]:
             cur += worst
             continue
         late = p["now_dep"] - p["o_dep"]
@@ -160,8 +176,8 @@ def _delay_cost(con, inb, care_overnight=180, meal=30):
 def _kpis(con, fid):
     inb = _inbound(con, fid)
     out, crew, risk = _get(con, "flights", inb["next_leg"], "flight"), _rotation(con, inb), _at_risk(con, inb)
-    margins = [MAX - G.projected_fdp(c, out) for c in crew]
     cp = _critical_path(con, inb)
+    margins = [crew_margin(c, out, _departure_slip(con, inb, out, cp)) for c in crew]
     return {"eta": inb["eff"], "delay_min": inb["delay_min"],
             "connecting": con.execute("SELECT COUNT(*) FROM passengers WHERE inbound = ?", (fid,)).fetchone()[0],
             "at_risk": len(risk), "vulnerable_at_risk": sum(p["tier"] in G.VULNERABLE for p in risk),
@@ -200,11 +216,14 @@ def get_turnaround_and_crew_state(fid):
     with closing(connect()) as con:
         inb = _inbound(con, fid)
         out = _get(con, "flights", inb["next_leg"], "flight")
-        crew = [{**c, "projected_fdp": G.projected_fdp(c, out), "margin": MAX - G.projected_fdp(c, out),
-                 "options": [{k: s[k] for k in ("id", "name", "location", "walk_min")} for s in _standby_options(con, c, out)]}
+        slip = _departure_slip(con, inb, out)
+        # margin = at the real departure (what every page and agent judges legality by); margin_on_schedule = if it left on time
+        crew = [{**c, "projected_fdp": G.projected_fdp(c, out), "margin": crew_margin(c, out, slip), "margin_on_schedule": crew_margin(c, out),
+                 "options": [{k: s[k] for k in ("id", "name", "location", "walk_min")} for s in _standby_options(con, c, out, slip)]}
                 for c in _rotation(con, inb)]
         risk, alts = {p["id"] for p in _at_risk(con, inb)}, _alternatives(con, inb)
-        pax = rows(con, """SELECT p.id, p.name, p.tier, p.dest, p.orig_flight, s.flight_id AS onward, s.seat_no, f.t_min + f.delay_min - ? AS conn_min,
+        pax = rows(con, f"""SELECT p.id, p.name, p.tier, p.dest, p.orig_flight, s.flight_id AS onward, s.seat_no, f.t_min + f.delay_min - ? AS conn_min,
+            {PAX_MIN_SQL} AS min_conn,
             (SELECT COUNT(*) FROM bags b WHERE b.pax_id = p.id) AS bags,
             (SELECT GROUP_CONCAT(DISTINCT b.status) FROM bags b WHERE b.pax_id = p.id) AS bag_status FROM passengers p JOIN seats s ON s.pax_id = p.id
             JOIN flights f ON f.id = s.flight_id WHERE p.inbound = ?""", (inb["eff"], fid))
@@ -230,23 +249,40 @@ def get_turnaround_and_crew_state(fid):
 
 def hub_status(fid):
     """Every decision recorded for a flight, from any tab, for the Decision hub: staged/approved changes (crew, maintenance,
-    passenger recommendations, ledger items, hub plans) plus the Curveballs rebookings that are written only to the audit log.
+    passenger recommendations, ledger items, hub plans, sign-offs) plus the PIN-approved rebookings that are written only to the
+    audit log (direct atomic rebooking, Curveballs single and batch rebooking).
     Each entry carries status, approver, the time it was decided and any note, newest first."""
     with closing(connect()) as con:
         _inbound(con, fid)
         decided = {}  # change id -> (ts, actor) of the approve/reject/rollback, which can be later than the staging time
         extra = []
         for e in rows(con, "SELECT * FROM audit WHERE action IN ('CHANGE_APPROVED', 'CHANGE_REJECTED', 'CHANGE_ROLLED_BACK', "
-                           "'CB_BATCH_RUN', 'CB_REBOOK_COMMIT') ORDER BY id"):
+                           "'REBOOK_COMMIT', 'CB_BATCH_RUN', 'CB_REBOOK_COMMIT') ORDER BY id"):
             d = json.loads(e["detail"] or "{}")
             if e["action"].startswith("CHANGE_"):
                 decided[d.get("id")] = (e["ts"], e["actor"])
-            elif d.get("flight") == fid:
-                moves = d.get("moves") or []
-                extra.append({"id": f"A{e['id']}", "status": "APPROVED", "by": e["actor"], "ts": e["ts"], "kinds": ["REBOOK"],
-                              "title": (f"Rebooked {moves[0].get('pax_id')} to {moves[0].get('to_flight')}" if moves
-                                        else f"Batch rebooking run ({d.get('batches', 0)} batches)"),
-                              "note": "", "source": "Connecting passengers"})
+                continue
+            if d.get("flight") != fid:
+                continue
+            status, note = "APPROVED", ""
+            if e["action"] == "REBOOK_COMMIT":
+                if not d.get("approved_by"):
+                    continue  # a system rebooking without a named controller approval is not a decision
+                title = f"Rebooked {len(d.get('rebooked_pax') or [])} passenger(s) in one atomic batch"
+            elif e["action"] == "CB_REBOOK_COMMIT":
+                m = (d.get("moves") or [{}])[0]
+                title = f"Rebooked {m.get('pax_id')} to {m.get('to')}"
+            else:  # a batch run: its outcome is in the run summary (written when the run ends)
+                run = one(con, "SELECT summary FROM cb_runs WHERE id = ?", (d.get("run"),))
+                sm = json.loads(run["summary"] or "{}") if run else {}
+                title = (f"Batch rebooking run: {sm.get('moved', 0)} passenger(s) moved, {sm.get('committed', 0)} of "
+                         f"{sm.get('batches', d.get('batches', 0))} batch(es) committed")
+                if sm.get("handed_off"):
+                    note = f"{sm['handed_off']} batch(es) handed to the controller"
+                if not sm.get("committed"):
+                    status = "ROLLED_BACK"
+            extra.append({"id": f"A{e['id']}", "status": status, "by": e["actor"], "ts": e["ts"], "kinds": ["REBOOK"],
+                          "title": title, "note": note, "source": "Connecting passengers"})
         out = []
         for c in rows(con, "SELECT * FROM changes WHERE flight_id = ? ORDER BY id", (fid,)):
             acts = json.loads(c["actions"] or "[]")
@@ -311,8 +347,11 @@ def _rebook(con, inb, assignments, chaos=False):
     return [(f"Transfer desk & baggage hall", f"{len(batch)} passenger(s) off {inb['id']} rebooked, bags re-tagged")] if batch else []
 
 
-def execute_atomic_passenger_rebook(fid, assignments=None, chaos=False, actor="OCC"):
-    """Required tool 2: all-or-nothing seat + bag move for a batch (default: the code-allocated plan)."""
+def execute_atomic_passenger_rebook(fid, assignments=None, chaos=False, actor="OCC", approved_by=None):
+    """Required tool 2: all-or-nothing seat + bag move for a batch (default: the code-allocated plan).
+    approved_by: the controller whose name + PIN were checked (POST /api/rebook). Only then does the audit entry count as a
+    human-approved booking; a system call without it stays flagged on the Connecting passengers page."""
+    actor = approved_by or actor
     with closing(connect()) as con:
         con.execute("BEGIN IMMEDIATE")
         try:
@@ -320,7 +359,7 @@ def execute_atomic_passenger_rebook(fid, assignments=None, chaos=False, actor="O
             seats_before = _seat_map(con)
             notes = _rebook(con, inb, _plan_rebooking(con, inb) if assignments is None else assignments, chaos)
             audit(con, actor, "REBOOK_COMMIT", {"flight": fid, "assignments": assignments, "rebooked_pax": _moved(con, seats_before),
-                                                "state_hash": state_hash(con)})
+                                                "approved_by": approved_by, "state_hash": state_hash(con)})
             con.execute("DELETE FROM reports WHERE flight_id = ?", (fid,))
             con.execute("COMMIT")
         except Exception as e:  # noqa: BLE001 - any failure must roll back
@@ -372,10 +411,10 @@ def _apply(con, fid, a, chaos=False):
         G.check_standby(standby, member, out)
         return _swap(con, member, standby, inb)
     if k == "CREW_AUTOSWAP":  # stretch: standby pairing matcher, closest legal crew first
-        notes = []
+        notes, slip = [], _departure_slip(con, inb, out)  # judged at the real departure, like every page and the Crew agent
         for m in _rotation(con, inb):
-            if G.projected_fdp(m, out) > MAX or m["type_rating"] != out["aircraft_type"]:
-                options = _standby_options(con, m, out)
+            if crew_margin(m, out, slip) < 0 or m["type_rating"] != out["aircraft_type"]:
+                options = _standby_options(con, m, out, slip)
                 if not options:
                     raise GuardViolation(f"No legal standby {m['role']} for {out['id']}")
                 notes += _swap(con, m, options[0], inb)
@@ -393,6 +432,7 @@ def _apply(con, fid, a, chaos=False):
         item, eng = _get(con, "maintenance", a.get("item_id"), "maintenance item"), _get(con, "engineers", a.get("engineer_id"), "engineer")
         if item["tail"] != inb["tail"] or item["status"] == "SIGNED":
             raise GuardViolation(f"{item['id']} is not an open item on {inb['tail']}")
+        G.check_engineer_licence(eng["id"], inb["aircraft_type"])
         con.execute("UPDATE maintenance SET engineer_id = ?, status = 'ASSIGNED' WHERE id = ?", (eng["id"], item["id"]))
         return [(f"Engineer {eng['name']}", f"Assigned {item['id']}: {item['item']} on {inb['tail']}")]
     if k == "DEPARTURE_RELEASE":
@@ -547,16 +587,24 @@ def sign_off_maintenance(item_id, licence):
             raise PermissionError(f"{item_id} must be assigned to an engineer first")
         if not re.fullmatch(r"B1-\d{4,6}", str(licence).strip().upper()) or not hmac.compare_digest(str(licence).strip().upper(), eng["licence"]):
             raise PermissionError(f"Licence does not match the assigned engineer {eng['name']}")
+        inb = one(con, "SELECT aircraft_type FROM flights WHERE kind = 'INBOUND' AND tail = ?", (item["tail"],))
+        G.check_engineer_licence(eng["id"], inb and inb["aircraft_type"])
         con.execute("BEGIN IMMEDIATE")
         fid = _sign(con, item, eng)
-        cid = con.execute("INSERT INTO changes(flight_id, title, actions, status, proposed_by, decided_by) VALUES (?,?,?,?,?,?)",
-                          (fid, f"Maintenance sign-off {item_id}", "[]", "APPROVED", eng["name"], eng["name"])).lastrowid
-        con.execute("INSERT INTO notifications(change_id, flight_id, recipient, message) VALUES (?,?,?,?)",
-                    (cid, fid, "OCC duty manager & captain", f"{item_id} ({item['item']}) signed off by {eng['name']}"))
-        con.execute("DELETE FROM reports WHERE flight_id = ?", (fid,))
-        audit(con, eng["name"], "MAINTENANCE_SIGNED", {"item": item_id, "state_hash": state_hash(con)})
+        record_signoff(con, fid, item, eng["name"], f"{item['id']} ({item['item']}) signed off by {eng['name']}")
+        audit(con, eng["name"], "MAINTENANCE_SIGNED", {"item": item["id"], "state_hash": state_hash(con)})
         con.execute("COMMIT")
-        return {"status": "SIGNED", "item": item_id}
+        return {"status": "SIGNED", "item": item["id"]}
+
+
+def record_signoff(con, fid, item, engineer_name, message):
+    """What every accepted sign-off leaves behind (inside the caller's transaction): a decision row (Decision hub / log), the
+    notification to the OCC duty manager and captain, and an invalidated live report."""
+    cid = con.execute("INSERT INTO changes(flight_id, title, actions, status, proposed_by, decided_by) VALUES (?,?,?,?,?,?)",
+                      (fid, f"Maintenance sign-off {item['id']}", "[]", "APPROVED", engineer_name, engineer_name)).lastrowid
+    con.execute("INSERT INTO notifications(change_id, flight_id, recipient, message) VALUES (?,?,?,?)",
+                (cid, fid, "OCC duty manager & captain", message[:700]))
+    con.execute("DELETE FROM reports WHERE flight_id = ?", (fid,))
 
 
 # mock walking time from each engineer base to the stands (minutes); a real system would read this from the roster/positioning feed
@@ -572,9 +620,9 @@ def maintenance_queue():
         engineers = rows(con, "SELECT id, name, location FROM engineers ORDER BY id")  # never the licence: it is the sign-off credential
         busy = {r["engineer_id"]: r["id"] for r in rows(con, "SELECT id, engineer_id FROM maintenance WHERE status = 'ASSIGNED'")}
         history = {}
-        for e in rows(con, "SELECT * FROM audit WHERE action IN ('CHANGE_APPROVED', 'MAINTENANCE_SIGNED') ORDER BY id"):
+        for e in rows(con, "SELECT * FROM audit WHERE action IN ('CHANGE_APPROVED', 'MAINTENANCE_SIGNED', 'CB_SIGNOFF_VALID') ORDER BY id"):
             d = json.loads(e["detail"] or "{}")
-            if e["action"] == "MAINTENANCE_SIGNED":
+            if e["action"] in ("MAINTENANCE_SIGNED", "CB_SIGNOFF_VALID"):
                 history.setdefault(d.get("item"), []).append({"ts": e["ts"], "who": e["actor"], "what": "Signed off"})
             for a in d.get("actions", []):
                 if a.get("kind") == "ASSIGN_ENGINEER":
@@ -595,8 +643,10 @@ def maintenance_queue():
                 finish = start + work
                 return {**e, "walk_min": walk, "busy_with": busy.get(e["id"]) if busy.get(e["id"]) != m["id"] else None,
                         "start": start, "finish": finish, "slack": (out["eff"] - finish) if out else None}
-            options = sorted((plan(e) for e in engineers), key=lambda o: (o["busy_with"] is not None, o["finish"], o["walk_min"]))
-            cur = next((o for o in options if o["id"] == m["engineer_id"]), None)  # computed before options are hidden for non-open items
+            everyone = sorted((plan(e) for e in engineers), key=lambda o: (o["busy_with"] is not None, o["finish"], o["walk_min"]))
+            cur = next((o for o in everyone if o["id"] == m["engineer_id"]), None)  # computed before options are hidden for non-open items
+            # only engineers licensed for this aircraft type can take the job (the same roster the assignment and sign-off check)
+            options = [o for o in everyone if inb and inb["aircraft_type"] in G.ENGINEER_TYPES.get(o["id"], ())]
             items.append({**m, "inbound": inb["id"] if inb else None, "outbound": out["id"] if out else None,
                           "on_block": on_block, "dep": out["eff"] if out else None, "dep_status": out["status"] if out else None,
                           "minutes_left": out["eff"] if out else None, "work_min": work, "blocks_departure": blocks,

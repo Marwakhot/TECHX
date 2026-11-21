@@ -104,15 +104,17 @@ const PaxImpact = (() => {
   // Connection feasibility: two separate checks on the connection that would be approved (the chosen rebooking, or the
   // current onward flight). A row is approvable only when BOTH pass; otherwise it is "Review required" with a recommended action.
   function feas(p) {
-    const b = bucket(p), bm = P.data.bag_mct, mct = P.data.rules.MCT_MIN, alts = p.alternatives || [];
+    const b = bucket(p), bm = P.data.bag_mct, mct = p.mct_min ?? P.data.rules.MCT_MIN, alts = p.alternatives || [];  // per passenger: 30 once rebooked
     const a = b === "rebooked" || b === "safe" ? null : chosen(p);
     const flight = a ? a.flight : p.connecting_flight, conn = a ? a.connection_min : p.available_min;
     if (conn == null) return { flight, pax: [false, "Connection time unknown"], bag: [false, "Unknown"], ok: false, action: "Hold for manual review: the connection time is unknown." };
     const paxOk = a ? conn >= mct && a.free_seats > 0 : conn >= mct && b !== "missed";
     const wrongPlace = !a && p.bags && p.bag_location && p.bag_location !== p.connecting_flight;
-    const bagOk = !p.bags || (a ? a.bags_make_it : conn >= bm && !wrongPlace);
+    const fwd = !a && p.bags && p.bag_forwarded;  // bags already routed on a later flight and delivered (approved bag plan)
+    const bagOk = !p.bags || (a ? a.bags_make_it : fwd || conn >= bm && !wrongPlace);
     const pax = [paxOk, paxOk ? `${conn} min, needs ${mct}` : !a && !alts.length && b !== "safe" ? "No flight they can make" : `${conn} min, needs ${mct}`];
-    const bag = [bagOk, !p.bags ? "No checked bags" : wrongPlace ? `Bags are on ${p.bag_location}` : `${conn} min, needs ${bm}`];
+    const bag = [bagOk, !p.bags ? "No checked bags" : fwd ? `Forwarded on ${p.bag_forwarded}, delivered to the passenger`
+      : wrongPlace ? `Bags are on ${p.bag_location}` : `${conn} min, needs ${bm}`];
     let action = "";
     if (!paxOk) action = alts.length ? `Rebook the passenger: pick a flight with a free seat and at least ${mct} min to connect.`
       : "Hold for manual review: no seat on a flight they can make (hotel or other carrier).";
@@ -263,7 +265,7 @@ const PaxImpact = (() => {
           ${fz.ok ? "" : `<div class="px2-ra"><b>Review required · recommended action</b>${h(fz.action)}</div>`}</div>
         <h4 class="px2-cap">Data used</h4><dl class="px2-dl"><dt>Inbound flight status</dt><dd>${h(P.data.summary.flight)} ${P.data.summary.delay_min ? `+${P.data.summary.delay_min} min` : "on time"}</dd>
           <dt>Seat availability</dt><dd>${alts.map((x) => h(x.flight)).join(" · ") || "none"}</dd><dt>Passenger profile</dt><dd>${p.assistance ? "Assistance recorded" : "No assistance"} · ${h(p.priority_category || "")}</dd>
-          <dt>Bags</dt><dd>${p.bags ? `${p.bags} on ${h(p.bag_location || "unknown")}` : "none checked"}</dd></dl>
+          <dt>Bags</dt><dd>${p.bags ? `${p.bags} on ${h(p.bag_forwarded || p.bag_location || "unknown")}` : "none checked"}</dd></dl>
         <h4 class="px2-cap">Assumptions</h4><ol class="px2-ol">${[...(a && p.agent_pick?.flight === a.flight && p.agent_pick.reason ? [`${P.data.agent?.name || "Passenger agent"}: ${p.agent_pick.reason}`] : []),
           ...(p.agent_hold ? [`${P.data.agent?.name || "Passenger agent"} recommends holding ${p.agent_hold.flight} by ${p.agent_hold.minutes} min instead: ${p.agent_hold.reason}`] : []),
           ...(p.factors || [])].map((x) => `<li>${h(x)}</li>`).join("")}${(p.missing || []).map((x) => `<li class="px-warn">${h(x)}</li>`).join("")}</ol>

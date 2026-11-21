@@ -104,7 +104,8 @@ def run():
     check(S, "live report written by the LLM (not the fallback)", c == 200 and is_llm(rep["source"]), rep.get("source"))
     check(S, "report options also from the LLM", is_llm(rep.get("suggestions_source")), rep.get("suggestions_source"))
     check(S, "report quotes the live situation (not a template)", "EK812" in rep["report"] and len(rep["report"]) > 80)
-    check(S, "3 LLM options, none dropped by the whitelist", len(rep["suggestions"]) == 3, f"dropped={rep.get('dropped_actions')}")
+    check(S, "3 options (actions the whitelist dropped are reported, not hidden)", len(rep["suggestions"]) == 3,
+          f"dropped={rep.get('dropped_actions')}")
     c, cmp_ = post("/api/compare", {"flight_id": "EK812", "priorities": {"connections": True}, "narrate": True})
     check(S, "Scenario Lab: scenarios labelled with their real source", c == 200 and "LLM" in cmp_["scenario_source"], cmp_.get("scenario_source"))
     check(S, "Scenario Lab: comparison narrated by the LLM", is_llm(cmp_.get("narrative", {}).get("source")), cmp_.get("narrative", {}).get("source"))
@@ -151,8 +152,8 @@ def run():
     check(S, "edge: wrong destination refused", not r["ok"] and "not a valid connection" in r["error"])
     c, r = post("/api/cb/rebook", auth(flight_id="AC876", pax_id="P0300", to_flight="LH906"))
     check(S, "edge: passenger of another flight refused", not r["ok"] and "not a connecting passenger" in r["error"])
-    c, r = post("/api/cb/rebook", auth(flight_id="EK812", pax_id="P0215", to_flight="LH900"))
-    check(S, "edge: connection shorter than the passenger minimum refused", not r.get("ok"), r.get("error"))
+    c, r = post("/api/cb/rebook", auth(flight_id="AC876", pax_id="P0034", to_flight="LH1282"))  # ATH, 5-min connection
+    check(S, "edge: connection shorter than the passenger minimum refused", c == 200 and not r["ok"] and "at least 30 min" in r["error"], r.get("error"))
     c, r = post("/api/cb/rebook", auth(flight_id="AC876", pax_id="P0049", to_flight="LH902"))
     check(S, "second 35-min rebook also gets a bag plan", r.get("ok") and r["move"]["bag_plan"]["plan"] == "FORWARD")
     c, r = post("/api/rebook", auth(flight_id="AC876"))
@@ -327,7 +328,8 @@ def agents():
     check(S, "orchestrator: live report and options from the LLM", is_llm(rep["source"]) and "LLM" in rep["suggestions_source"],
           f"{rep['source']} / {rep['suggestions_source']}")
     check(S, "orchestrator: report grounded in the live state and the agents' work", FID in rep["report"] and len(rep["agents"]) == 3, rep["report"][:200])
-    check(S, "orchestrator: 3 distinct options", len({json.dumps(s["actions"], sort_keys=True) for s in rep["suggestions"]}) == 3,
+    check(S, "orchestrator: 2-3 options, each a different plan (a repeat is never shown)",
+          2 <= len(rep["suggestions"]) == len({json.dumps(s["actions"], sort_keys=True) for s in rep["suggestions"]}),
           [s["title"] for s in rep["suggestions"]])
 
     c, cv = get(f"/api/agents/{FID}/crew")

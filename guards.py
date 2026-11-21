@@ -9,12 +9,16 @@ LIMITS: Final = MappingProxyType({
     "STANDBY_BUFFER_MIN": 60,   # extra margin demanded of a standby crew member
     "MAX_WALK_MIN": 30,         # terminal proximity for standby crew
     "MCT_MIN": 45,              # minimum connection time at the hub (passenger)
-    "BAG_MCT_MIN": 60,          # minimum connection time for a checked bag to make the onward flight
+    "REBOOKED_MCT_MIN": 30,     # a passenger already moved by an approved rebooking may keep a connection this short
+    "BAG_MCT_MIN": 45,          # minimum connection time for a checked bag to make the onward flight
     "REMOTE_BAG_PENALTY_MIN": 15,  # extra bag transfer time when the inbound parks on a remote stand
     "MAX_ONWARD_HOLD_MIN": 30,  # longest hold any single onward flight may take for connecting passengers
 })
 VULNERABLE: Final = frozenset({"UM", "PRM", "MEDICAL", "INFANT", "ELDERLY"})
 TIER_RANK: Final = MappingProxyType({"UM": 0, "PRM": 1, "MEDICAL": 2, "INFANT": 3, "ELDERLY": 4, "STANDARD": 9})
+# Licensed roster: the aircraft types each engineer may certify. The one list every assignment and sign-off path checks.
+ENGINEER_TYPES: Final = MappingProxyType({"E1": frozenset({"B777", "B788"}), "E2": frozenset({"B777", "A320"}),
+                                          "E3": frozenset({"A359", "B788", "A320"})})
 
 
 class GuardViolation(Exception):
@@ -49,6 +53,11 @@ def check_maintenance(items):
     open_items = [i["id"] for i in items if i["severity"] == "NO-GO" and i["status"] != "SIGNED"]
     if open_items:
         raise GuardViolation(f"MAINTENANCE: no departure while NO-GO items {open_items} lack a licensed engineer sign-off")
+
+
+def check_engineer_licence(engineer_id, aircraft_type):
+    if aircraft_type not in ENGINEER_TYPES.get(engineer_id, ()):
+        raise GuardViolation(f"ENGINEER LICENCE: {engineer_id} is not licensed for the {aircraft_type}")
 
 
 def priority_order(pax):

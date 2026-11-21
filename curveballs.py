@@ -27,19 +27,18 @@ from guards import GuardViolation
 CB: Final = MappingProxyType({
     "BATCH_SIZE": 10,             # U-4.1: standard passengers are rebooked in batches of 10
     "MAX_BATCH_ATTEMPTS": 2,      # U-4.1: first try + one automatic retry, then hand the batch to the controller
-    "BAG_TRANSFER_MIN": 45,       # U-4.4: minimum bag transfer time (from the brief); +15 when the inbound is on a remote stand
-    "PAX_FAST_CONNECT_MIN": 30,   # U-4.4: shortest connection a passenger may be rebooked onto via the single-passenger rebook
+    "BAG_TRANSFER_MIN": G.LIMITS["BAG_MCT_MIN"],  # U-4.4: minimum bag transfer time (guards.py); +15 when the inbound is on a remote stand
+    "PAX_FAST_CONNECT_MIN": G.LIMITS["REBOOKED_MCT_MIN"],  # U-4.4: shortest connection the single-passenger rebook may use
     "SIGNOFF_FUTURE_TOLERANCE_MIN": 2,  # U-4.3: a sign-off stamped in the future is invalid (small clock-skew tolerance)
 })
-# U-4.3 licensed roster: which engineer may certify which aircraft type. (E3 is licensed, but not on the B777.)
-ROSTER = (("E1", "B777"), ("E1", "B788"), ("E2", "B777"), ("E2", "A320"), ("E3", "A359"), ("E3", "B788"))
-# U-4.3 when each defect was opened, in minutes before the dataset was seeded (the captain reported M-1 at T-40)
-DEFECT_OPENED_MIN_AGO = {"M-1": 40, "M-2": 40, "M-3": 90, "M-4": 120, "M-5": 180}
+# U-4.3 the licensed roster (which engineer may certify which aircraft type) is guards.ENGINEER_TYPES, the same list every
+# assignment and sign-off path checks. (E3 is licensed, but not on the B777.)
+# U-4.3 when each defect was opened, in minutes before the dataset was seeded (the captain reported M-1 at T-40, M-6 at T-20)
+DEFECT_OPENED_MIN_AGO = {"M-1": 40, "M-2": 40, "M-3": 90, "M-4": 120, "M-5": 180, "M-6": 20}
 STATE_EVENTS = ("CB_BATCH_COMMIT", "CB_EXTERNAL_SALE", "CB_SIGNOFF_VALID", "CB_REBOOK_COMMIT")  # replayed by replay.py
 TS = "%Y-%m-%d %H:%M:%S"
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS cb_roster(engineer_id TEXT NOT NULL, aircraft_type TEXT NOT NULL, PRIMARY KEY(engineer_id, aircraft_type));
 CREATE TABLE IF NOT EXISTS cb_defects(item_id TEXT PRIMARY KEY, opened_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS cb_signoffs(id INTEGER PRIMARY KEY, item_id TEXT, engineer_id TEXT, result TEXT, signed_at TEXT,
   valid INT NOT NULL, reasons TEXT, ts TEXT DEFAULT (datetime('now','localtime')));
@@ -67,7 +66,6 @@ def ensure(db=None):
             con.execute("ALTER TABLE cb_crew_msgs ADD COLUMN llm TEXT")
         except Exception:  # noqa: BLE001 - column already exists
             pass
-        con.executemany("INSERT OR IGNORE INTO cb_roster VALUES (?,?)", ROSTER)
         seeded = S.one(con, "SELECT value FROM meta WHERE key = 'seeded_at'")
         base = datetime.strptime(seeded["value"], TS) if seeded else datetime.now()
         con.executemany("INSERT OR IGNORE INTO cb_defects VALUES (?,?)",
@@ -78,7 +76,7 @@ def ensure(db=None):
 # U-4.4  bag plan, checked inside the same transaction as the seat
 # =====================================================================================================================
 def bag_min(con, inb):
-    return CB["BAG_TRANSFER_MIN"] + (G.LIMITS["REMOTE_BAG_PENALTY_MIN"] if S._remote(con, inb) else 0)
+    return G.bag_mct(S._remote(con, inb))
 
 
 def bag_plan(con, inb, pax, to_flight):
@@ -386,15 +384,17 @@ def crew_message(fid, sender, text):
         inb = S._inbound(con, fid)
         out = S._get(con, "flights", inb["next_leg"], "flight")
         before = _duty_snapshot(con)
+        slip = S._departure_slip(con, inb, out)  # judged at the real departure, like the pages, the Crew agent and CREW_AUTOSWAP
         crew, taken = [], set()  # each reserve is suggested to one person only (CREW_AUTOSWAP assigns them the same way)
         for m in S._rotation(con, inb):
-            fdp = G.projected_fdp(m, out)
+            wait = slip if m["duty_used"] else 0  # crew already on duty keep using duty while the departure slips
+            fdp = G.projected_fdp(m, out) + wait
             try:
-                G.check_crew_duty(m, out)
+                G.check_crew_duty(m, out, wait)
                 legal, why = True, ""
             except GuardViolation as e:
                 legal, why = False, str(e)
-            opts = [s for s in S._standby_options(con, m, out) if s["id"] not in taken] if not legal else []
+            opts = [s for s in S._standby_options(con, m, out, slip) if s["id"] not in taken] if not legal else []
             taken |= {opts[0]["id"]} if opts else set()
             crew.append({"id": m["id"], "name": m["name"], "role": m["role"], "duty_used": m["duty_used"],
                          "minutes_to_limit": S.MAX - m["duty_used"], "minutes_needed": fdp - m["duty_used"], "projected_fdp": fdp,
@@ -455,7 +455,7 @@ def validate_signoff(con, item_id, engineer_id, signed_at):
     eng = S.one(con, "SELECT id, name FROM engineers WHERE id = ?", (str(engineer_id or ""),))
     if not eng:
         reasons.append(f"Engineer ID {engineer_id!r} is not on the licensed roster")
-    elif not con.execute("SELECT 1 FROM cb_roster WHERE engineer_id = ? AND aircraft_type = ?", (eng["id"], actype)).fetchone():
+    elif actype not in G.ENGINEER_TYPES.get(eng["id"], ()):
         reasons.append(f"Engineer {eng['id']} ({eng['name']}) is not licensed for the {actype}")
     t = _parse_time(signed_at)
     opened = _parse_time(defect["opened_at"]) if defect else None
@@ -490,9 +490,8 @@ def submit_signoff(item_id, engineer_id, signed_at, result="OK"):
                 S._sign(con, item, eng)
                 S.audit(con, eng["name"], "CB_SIGNOFF_VALID", {"item": item["id"], "engineer": eng["id"], "signed_at": signed_at,
                                                                "state_hash": S.state_hash(con)})
-                _notify(con, fid, "OCC duty manager & captain", f"{item['id']} ({item['item']}) sign-off validated: {eng['name']}, "
-                                                                f"licensed for {ctx['aircraft_type']}, signed after the defect was opened")
-                con.execute("DELETE FROM reports WHERE flight_id = ?", (fid,))
+                S.record_signoff(con, fid, item, eng["name"], f"{item['id']} ({item['item']}) sign-off validated: {eng['name']}, "
+                                                              f"licensed for {ctx['aircraft_type']}, signed after the defect was opened")
             else:
                 S.audit(con, "maintenance feed", "CB_SIGNOFF_REJECTED", {"item": item["id"], "engineer": engineer_id,
                                                                          "signed_at": signed_at, "reasons": reasons})
@@ -531,8 +530,8 @@ def view(fid):
             "maintenance": mx,
             "signoffs": S.rows(con, "SELECT * FROM cb_signoffs WHERE item_id IN (SELECT id FROM maintenance WHERE tail = ?) "
                                     "ORDER BY id DESC LIMIT 20", (inb["tail"],)),
-            "roster": S.rows(con, "SELECT r.engineer_id, e.name, GROUP_CONCAT(r.aircraft_type, ', ') AS types FROM cb_roster r "
-                                  "JOIN engineers e ON e.id = r.engineer_id GROUP BY r.engineer_id ORDER BY r.engineer_id"),
+            "roster": [{"engineer_id": e["id"], "name": e["name"], "types": ", ".join(sorted(G.ENGINEER_TYPES.get(e["id"], ())))}
+                       for e in S.rows(con, "SELECT id, name FROM engineers ORDER BY id") if e["id"] in G.ENGINEER_TYPES],
             "rebook": rebook_options(con, inb),
             "bag_plans": S.rows(con, "SELECT b.* FROM cb_bag_plans b JOIN passengers p ON p.id = b.pax_id WHERE p.inbound = ? "
                                      "ORDER BY b.id DESC LIMIT 30", (fid,)),
