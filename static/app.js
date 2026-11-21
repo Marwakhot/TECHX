@@ -343,6 +343,7 @@ async function reportView(id) {
       const r = await api("/api/comms", { flight_id: id, speaker, text });
       toast("Call saved · agents responding");
       $("#txt").value = "";
+      $("#sugg").innerHTML = loadingHtml("The agents are working on new recommendations…");
       const now = new Date().toTimeString().slice(0, 5);
       $("#save").nextElementSibling.insertAdjacentHTML("afterbegin", `<li><b>${h(now)} · ${h(speaker || "OCC call")}</b><br>${h(text)}</li>`);
       AgentLive.start(id, r, () => { if (location.hash === `#/flight/${id}`) reportView(id); }, { enroute: f.status === "ENROUTE", text, speaker });
@@ -363,8 +364,10 @@ async function reportView(id) {
   loadReport(id);
 }
 
+const loadingHtml = (msg) => `<p class="muted small"><span class="x-spin"></span> ${msg}</p>`;  // spinner while the AI / agents work
 async function loadReport(id, force) {
-  $("#report").textContent = "Generating report…";
+  $("#report").innerHTML = loadingHtml("Generating report…");
+  if ($("#sugg")) $("#sugg").innerHTML = loadingHtml("Preparing recommendations: the agents and the AI are working, this takes a few seconds…");
   try {
     const r = force ? await api("/api/report", { flight_id: id }) : await api(`/api/report/${id}`);
     if (!$("#report") || S.flight !== id) return;
@@ -379,7 +382,10 @@ async function loadReport(id, force) {
     $("#sugg").onclick = (e) => { const c = e.target.closest("[data-opt]"); if (!c || !r.suggestions[c.dataset.opt].actions.length) return;
       document.querySelectorAll("#sugg .x-sel").forEach((x) => x.classList.remove("x-sel")); c.classList.add("x-sel");
       Extras.paxPanel($("#x-pax"), id, r.suggestions[c.dataset.opt]); };
-  } catch (e) { toast(e.message, "bad"); }
+  } catch (e) {
+    toast(e.message, "bad");
+    if ($("#sugg")) $("#sugg").innerHTML = '<p class="muted small">Could not load the recommendations. Try ↻ Regenerate.</p>';
+  }
 }
 
 // ---------- decision hub (was Scenario Lab) ----------
@@ -426,7 +432,7 @@ async function labView(id) {
   mark(); loadLab(id);
 }
 async function loadLab(id, regenerate = false) {
-  $("#scen").innerHTML = `<p class="muted">${regenerate ? "Asking the agent for new scenarios, then dry-running them…" : "Dry-running the recommended scenarios…"}</p>`; $("#hub-rest").innerHTML = "";
+  $("#scen").innerHTML = loadingHtml(regenerate ? "Asking the agent for new scenarios, then dry-running them…" : "Dry-running the recommended scenarios…"); $("#hub-rest").innerHTML = "";
   try {
     const [c, d] = await Promise.all([api("/api/compare", { flight_id: id, priorities: S.prio, regenerate, narrate: false }), api(`/api/flight/${id}`)]);
     const rows = c.rows.slice(0, 3), used = hubOn(c.priorities);

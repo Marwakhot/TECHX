@@ -12,6 +12,7 @@ state hash, controller PIN, staging) and keeps its own records in new `cb_*` tab
   U-4.4  Bag feasibility is checked inside the same transaction as the seat. If the bag cannot make the connection it is
          routed on a later flight with a delivery note; if no such flight exists the rebook does not commit.
 """
+import hmac
 import json
 import re
 from contextlib import closing
@@ -445,8 +446,8 @@ def _parse_time(s):
         return None
 
 
-def validate_signoff(con, item_id, engineer_id, signed_at):
-    """Pure check (no writes). Returns (ok, reasons, context)."""
+def validate_signoff(con, item_id, engineer_id, signed_at, who=None):
+    """Pure check (no writes). Returns (ok, reasons, context). who: how to name an unknown engineer in the reason."""
     item = S._get(con, "maintenance", item_id, "maintenance item")
     inb = S.one(con, S.F_SQL + " WHERE kind = 'INBOUND' AND tail = ?", (item["tail"],))
     actype = inb["aircraft_type"] if inb else None
@@ -454,7 +455,7 @@ def validate_signoff(con, item_id, engineer_id, signed_at):
     reasons = []
     eng = S.one(con, "SELECT id, name FROM engineers WHERE id = ?", (str(engineer_id or ""),))
     if not eng:
-        reasons.append(f"Engineer ID {engineer_id!r} is not on the licensed roster")
+        reasons.append(f"{who or f'Engineer ID {engineer_id!r}'} is not on the licensed roster")
     elif actype not in G.ENGINEER_TYPES.get(eng["id"], ()):
         reasons.append(f"Engineer {eng['id']} ({eng['name']}) is not licensed for the {actype}")
     t = _parse_time(signed_at)
@@ -472,18 +473,32 @@ def validate_signoff(con, item_id, engineer_id, signed_at):
     return not reasons, reasons, {"item": item, "engineer": eng, "aircraft_type": actype, "opened_at": defect and defect["opened_at"]}
 
 
-def submit_signoff(item_id, engineer_id, signed_at, result="OK"):
+def _engineer_by_licence(con, licence):
+    """The engineer whose licence number this is (constant-time compare; the licence never leaves the server), else None."""
+    lic = str(licence or "").strip().upper()
+    return next((e["id"] for e in S.rows(con, "SELECT id, licence FROM engineers")
+                 if hmac.compare_digest(lic.encode(), e["licence"].encode())), None)
+
+
+def submit_signoff(item_id, engineer_id, signed_at, result="OK", licence=None):
     """A sign-off record arrives (e.g. 'hydraulic inspection OK'). Valid -> item SIGNED (departure guard can clear).
-    Invalid -> item stays open, departure stays blocked, maintenance control is alerted."""
+    Invalid -> item stays open, departure stays blocked, maintenance control is alerted.
+    The console signs with the engineer's licence number alone (licence); a feed may send engineer_id + signed_at instead.
+    With no signed_at the sign-off is stamped now."""
     ensure()
+    signed_at = signed_at or datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     with closing(S.connect()) as con:
+        who = None
+        if licence is not None:
+            engineer_id = _engineer_by_licence(con, licence)
+            who = None if engineer_id else "The licence number entered"
         con.execute("BEGIN IMMEDIATE")
         try:
-            ok, reasons, ctx = validate_signoff(con, item_id, engineer_id, signed_at)
+            ok, reasons, ctx = validate_signoff(con, item_id, engineer_id, signed_at, who)
             item = ctx["item"]
             fid = (S.one(con, "SELECT id FROM flights WHERE kind = 'INBOUND' AND tail = ?", (item["tail"],)) or {}).get("id")
             con.execute("INSERT INTO cb_signoffs(item_id, engineer_id, result, signed_at, valid, reasons) VALUES (?,?,?,?,?,?)",
-                        (item["id"], str(engineer_id)[:40], str(result)[:40], str(signed_at)[:40], int(ok), json.dumps(reasons)))
+                        (item["id"], str(engineer_id or "—")[:40], str(result)[:40], str(signed_at)[:40], int(ok), json.dumps(reasons)))
             if ok:
                 eng = S.one(con, "SELECT * FROM engineers WHERE id = ?", (ctx["engineer"]["id"],))
                 con.execute("UPDATE maintenance SET engineer_id = ? WHERE id = ?", (eng["id"], item["id"]))
@@ -535,7 +550,6 @@ def view(fid):
             "rebook": rebook_options(con, inb),
             "bag_plans": S.rows(con, "SELECT b.* FROM cb_bag_plans b JOIN passengers p ON p.id = b.pax_id WHERE p.inbound = ? "
                                      "ORDER BY b.id DESC LIMIT 30", (fid,)),
-            "now": datetime.now().strftime("%Y-%m-%dT%H:%M"),
         }
 
 

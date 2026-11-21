@@ -98,7 +98,8 @@ POST = {
                                                              bool(b.get("chaos_repeat"))),
     "/api/cb/handoff/resolve": lambda b: curveballs.resolve_handoff(b["id"], b.get("controller"), b.get("pin")),
     "/api/cb/crew-message": lambda b: curveballs.crew_message(b["flight_id"], b.get("sender"), b["text"]),
-    "/api/cb/signoff": lambda b: curveballs.submit_signoff(b["item_id"], b.get("engineer_id"), b.get("signed_at"), b.get("result", "OK")),
+    "/api/cb/signoff": lambda b: curveballs.submit_signoff(b["item_id"], b.get("engineer_id"), b.get("signed_at"), b.get("result", "OK"),
+                                                           b.get("licence")),  # the console sends the licence only; time = now
     "/api/cb/rebook": lambda b: curveballs.rebook_one(b["flight_id"], b["pax_id"], b["to_flight"], b.get("controller"), b.get("pin")),
 }
 

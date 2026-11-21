@@ -80,10 +80,13 @@ def test_one_licence_roster_for_assignment_offer_and_sign_off():
         S.sign_off_maintenance("M-6", "B1-20417")
 
 
-def test_curveballs_sign_off_shows_in_hub_history_and_notifications():
-    r = curveballs.submit_signoff("M-6", "E2", S.one(S.connect(), "SELECT datetime('now','localtime') AS t")["t"])
+def test_curveballs_sign_off_by_licence_shows_in_hub_decision_log_history_and_notifications():
+    bad = curveballs.submit_signoff("M-6", None, None, licence="B1-77310")  # a licence nobody holds
+    assert not bad["valid"] and bad["reasons"] == ["The licence number entered is not on the licensed roster"]
+    r = curveballs.submit_signoff("M-6", None, None, licence="b1-31882 ")  # E2 (A320); no date: the server stamps the time
     assert r["valid"], r["reasons"]  # M-6 has a defect-opened time now
     assert any(x["title"] == "Maintenance sign-off M-6" and x["status"] == "APPROVED" for x in S.hub_status("AZ410")["decisions"])
+    assert any(c["title"] == "Maintenance sign-off M-6" and c["status"] == "APPROVED" for c in S.decisions()["decisions"])  # Decision log
     assert next(i for i in S.maintenance_queue()["items"] if i["id"] == "M-6")["history"][-1]["what"] == "Signed off"
     assert any("M-6" in n["message"] for n in S.decisions()["notifications"])
 

@@ -85,27 +85,25 @@ const Curveballs = (() => {
   function u43(el, d) {
     const items = d.maintenance;
     el.innerHTML = `<h3>Sign-off validation ${MARK("U-4.3")}</h3>
-      <p class="small muted">Each sign-off must come from an engineer on the licensed roster for the aircraft type, timed after the defect was opened. Otherwise the departure stays blocked and maintenance control is alerted.</p>
+      <p class="small muted">The engineer signs off with their licence number. It must belong to an engineer on the licensed roster for the aircraft type; the system records the time. Otherwise the departure stays blocked and maintenance control is alerted.</p>
       <div class="row"><label>Aircraft of ${flightSelect("cb-mf", d.flights, d.flight.id)}</label><span class="small muted">${h(d.flight.tail)} · ${h(d.flight.aircraft_type)} ·
         roster: ${d.roster.map((x) => `${h(x.engineer_id)} ${h(x.name)} (${h(x.types)})`).join(" · ")}</span></div>
       <table><tr><th>Item</th><th>Defect</th><th>Severity</th><th>Opened</th><th>Status</th></tr>${items.map((m) =>
         `<tr><td>${h(m.id)}</td><td>${h(m.item)}</td><td>${h(m.severity)}</td><td class="small">${h(m.opened_at)}</td><td>${stTag(m.status)} ${h(m.signed_by || "")}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">No items on this tail</td></tr>'}</table>
       <div class="row"><select id="cb-it">${items.map((m) => `<option>${h(m.id)}</option>`).join("")}</select>
-        <input id="cb-eng" placeholder="Engineer ID" style="width:140px"><input id="cb-at" type="datetime-local">
+        <input id="cb-lic" type="password" autocomplete="off" placeholder="Engineer licence no. (B1-xxxxx)" style="width:230px">
         <button id="cb-so">Submit sign-off "OK"</button>
-        <button class="ghost" id="cb-bad">Fill suspicious</button><button class="ghost" id="cb-good">Fill valid</button></div>
+        <button class="ghost" id="cb-bad">Fill suspicious</button></div>
       ${d.signoffs.length ? `<table><tr><th>Item</th><th>Engineer</th><th>Signed at</th><th>Result</th><th>Why</th></tr>${d.signoffs.map((s) =>
         `<tr><td>${h(s.item_id)}</td><td>${h(s.engineer_id)}</td><td class="small">${h(s.signed_at)}</td><td>${s.valid ? tag("VALID", "ok") : tag("REJECTED", "bad")}</td>
          <td class="small">${h(json(s.reasons).join("; ") || "Roster and time checks passed")}</td></tr>`).join("")}</table>` : ""}`;
     q("#cb-mf", el).onchange = (e) => { st.mxFlight = e.target.value; mount("mx", el.parentElement); };
     const first = items.find((m) => m.status !== "SIGNED") || items[0];
-    const before = (t) => { const x = new Date(String(t).replace(" ", "T")); x.setMinutes(x.getMinutes() - 15 - x.getTimezoneOffset()); return x.toISOString().slice(0, 16); };
-    q("#cb-bad", el).onclick = () => { if (!first) return; q("#cb-it", el).value = first.id; q("#cb-eng", el).value = "ENG-7731"; q("#cb-at", el).value = before(first.opened_at); };
-    q("#cb-good", el).onclick = () => { if (!first) return; q("#cb-it", el).value = first.id;
-      q("#cb-eng", el).value = d.roster.find((x) => x.types.includes(d.flight.aircraft_type))?.engineer_id || ""; q("#cb-at", el).value = d.now; };
+    q("#cb-bad", el).onclick = () => { if (!first) return; q("#cb-it", el).value = first.id; q("#cb-lic", el).value = "B1-77310"; }; // not on the roster
     q("#cb-so", el).onclick = async () => {
       try {
-        const r = await api("/api/cb/signoff", { item_id: q("#cb-it", el).value, engineer_id: q("#cb-eng", el).value.trim(), signed_at: q("#cb-at", el).value });
+        const r = await api("/api/cb/signoff", { item_id: q("#cb-it", el).value, licence: q("#cb-lic", el).value.trim() });
+        q("#cb-lic", el).value = "";
         toast(r.valid ? `${r.item} signed off · departure ${r.departure_blocked ? "still blocked by another NO-GO item" : "no longer blocked by maintenance"}`
           : `Rejected: ${r.reasons.join("; ")}. Departure stays blocked; maintenance control alerted.`, r.valid ? "ok" : "bad");
         await refresh();
