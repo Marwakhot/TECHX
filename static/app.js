@@ -338,17 +338,19 @@ async function reportView(id) {
   // Saving a call starts the agents at once; the strip follows them, then the report, stats and scenarios reload.
   $("#save").onclick = async () => {
     const speaker = $("#spk").value.trim(), text = $("#txt").value.trim();
-    $("#save").disabled = true;
+    const btn = $("#save"), label = btn.innerHTML, before = $("#sugg").innerHTML;
+    // show the spinner at once: on a serverless host the agents run inside this request, so it can take a while to return
+    btn.disabled = true; btn.innerHTML = `<span class="x-spin"></span> Saving…`;
+    $("#sugg").innerHTML = loadingHtml("The agents are working on new recommendations…");
     try {
       const r = await api("/api/comms", { flight_id: id, speaker, text });
       toast("Call saved · agents responding");
       $("#txt").value = "";
-      $("#sugg").innerHTML = loadingHtml("The agents are working on new recommendations…");
       const now = new Date().toTimeString().slice(0, 5);
       $("#save").nextElementSibling.insertAdjacentHTML("afterbegin", `<li><b>${h(now)} · ${h(speaker || "OCC call")}</b><br>${h(text)}</li>`);
       AgentLive.start(id, r, () => { if (location.hash === `#/flight/${id}`) reportView(id); }, { enroute: f.status === "ENROUTE", text, speaker });
-    } catch (e) { toast(e.message, "bad"); }
-    if ($("#save")) $("#save").disabled = false;
+    } catch (e) { toast(e.message, "bad"); if ($("#sugg")) $("#sugg").innerHTML = before; } // nothing saved: keep the old options
+    if ($("#save")) { $("#save").disabled = false; $("#save").innerHTML = label; }
   };
   $("#mic").onclick = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
