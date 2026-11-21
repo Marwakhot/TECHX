@@ -94,8 +94,7 @@ async function mapTab() {
   const late = flights.filter((f) => f.delay_min).sort((a, b) => b.delay_min - a.delay_min), onTime = flights.filter((f) => !f.delay_min);
   const action = late.filter((f) => f.at_risk || f.crew_illegal || f.open_nogo);
   $("#tab").innerHTML = `<div class="globe-zone"><div class="globe-stage">
-      <div class="brand"><h2 class="brand-name" aria-label="Aviant">${[..."Aviant"].map((c, i) => `<span style="--i:${i}">${c}</span>`).join("")}</h2>
-        <p class="brand-sub">Turnaround and disruption recovery · FRA hub</p></div>
+      <div class="brand"><h2 class="brand-name" aria-label="Aviant">${[..."Aviant"].map((c, i) => `<span style="--i:${i}">${c}</span>`).join("")}</h2></div>
       <aside class="live-side" style="grid-column:1"><div class="live-head"><span class="live-dot"></span>Delayed · take action</div>
         <div class="live-big">${late.length}<span> of ${flights.length} inbound delayed</span></div>
         <p class="small live-note">${action.length} need a decision now</p>${sideList(late, "No delays right now")}</aside>
@@ -401,15 +400,22 @@ const eur = (v) => `€${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k`;
 const ICO = { pax: '<path d="M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1M9.5 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6M21 19v-1a4 4 0 0 0-3-3.8M16 4.2a3 3 0 0 1 0 5.6"/>',
   bag: '<rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M4 12h16"/>', crew: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   mx: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L4 16.8 7.2 20l5.3-5.3a4 4 0 0 0 5.2-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>', net: '<circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.5M8.2 13.2l7.6 4.5"/>' };
-function hubChecks(s, id) {
+// now = the flight's CURRENT state: a problem that exists right now shows as an issue until it is fixed on its page (the
+// scenario's dry run would fix it too, and the card says so), so the controller sees every open problem before approving
+function hubChecks(s, id, now) {
   if (!s.ok) return [["pax", "Passengers", false, "Refused by the guards.", s.reason, null]];
   const k = s.kpis, c = [];
+  const open = (row, bad, txt) => { if (!bad || !row[2]) return row; row[2] = false; row[3] = `Now: ${txt} This plan fixes it once approved, or fix it directly on the page below.`; return row; };
   c.push(["pax", "Passengers", !k.at_risk && !k.vulnerable_at_risk, k.at_risk || k.vulnerable_at_risk ? `${k.at_risk} passengers still miss their connection${k.vulnerable_at_risk ? `, ${k.vulnerable_at_risk} of them vulnerable` : ""}.` : `All ${k.baseline_at_risk} at-risk passengers are protected.`,
     `Affected: ${k.at_risk} passengers. Rebook them on the next free seats.`, [`#/tab/pax/${id}`, "Passengers tab"]]);
+  if (now) open(c[0], now.at_risk > 0, `${now.at_risk} passenger${now.at_risk > 1 ? "s" : ""} will miss their connection${now.vulnerable_at_risk ? ` (${now.vulnerable_at_risk} vulnerable)` : ""}.`);
   const bags = (k.bags_rush || 0) + (k.bags_short_connection || 0);
-  c.push(["bag", "Baggage", !bags, bags ? `${bags} bags may not make their passenger's flight.` : "All bags travel with their passengers.", `Affected: ${bags} bags. Move those passengers to a later flight or rush-tag the bags.`, [`#/flight/${id}`, "Live report"]]);
+  c.push(["bag", "Baggage", !bags, bags ? `${bags} bags may not make their passenger's flight.` : "All bags travel with their passengers.", `Affected: ${bags} bags. Move those passengers to a later flight or rush-tag the bags.`, [`#/tab/pax/${id}`, "Connecting passengers (baggage)"]]);
+  const bagsNow = now ? (now.bags_rush || 0) + (now.bags_short_connection || 0) : 0;
+  if (now) open(c[1], bagsNow > 0, `${bagsNow} checked bag${bagsNow > 1 ? "s" : ""} will not make their passenger's flight.`);
   const crewBad = k.crew_illegal > 0 || k.crew_min_margin < 0;
   c.push(["crew", "Crew", !crewBad, crewBad ? `${k.crew_illegal || 1} crew member${k.crew_illegal > 1 ? "s" : ""} would exceed the duty limit.` : `Duty time is within limits (${k.crew_min_margin} min margin).`, "Affected: crew duty time. Assign standby crew.", [`#/tab/crew/${id}`, "Crew tab"]]);
+  if (now) open(c[2], now.crew_illegal > 0, `${now.crew_illegal} crew member${now.crew_illegal > 1 ? "s" : ""} would exceed the duty limit.`);
   c.push(["mx", "Maintenance", !k.open_nogo, k.open_nogo ? `${k.open_nogo} NO-GO item${k.open_nogo > 1 ? "s" : ""} still unsigned.` : "Aircraft is cleared.", "Affected: open NO-GO items. A licensed engineer must sign them off.", [`#/tab/mx/${id}`, "Maintenance tab"]]);
   // holds on other passengers' onward flights (the outbound's own retime is the turnaround, not a knock-on delay)
   const od = k.onward_delay_added ?? k.network_delay_added, net = od > 30;
@@ -445,12 +451,12 @@ async function loadLab(id, regenerate = false) {
     $("#hub-note").innerHTML = `Scenarios built to protect: ${used.length ? used.map((k) => HUB_P.find(([p]) => p === k)[1].toLowerCase()).join(", ") : "the agent's default balance"}`;
     const draw = () => {
       const pick = S.hubPick, s = rows[pick], L = "ABC";
-      $("#scen").innerHTML = rows.map((r, i) => { const ch = hubChecks(r, id), bad = ch.filter((x) => !x[2]).length;
+      $("#scen").innerHTML = rows.map((r, i) => { const ch = hubChecks(r, id, d.kpis), bad = ch.filter((x) => !x[2]).length;
         return `<button class="hub-card ${i === pick ? "on" : ""}" data-i="${i}"><div class="hub-prio">${used.map((k) => `<span>${h(HUB_P.find(([p]) => p === k)[1])}</span>`).join("")}</div>
           <div class="hub-cl">SCENARIO ${L[i]} ${i === 0 && r.ok ? '<em>AI recommended</em>' : ""}</div><b>${h(r.title)}</b><p>${h(r.why)}</p>
           <div class="hub-bars">${(r.ok ? ch : [0, 0, 0, 0, 0].map(() => [0, 0, false])).map((x) => `<i class="${x[2] ? "g" : "r"}"></i>`).join("")}<span class="${bad ? "r" : "g"}">${!r.ok ? "Blocked" : bad ? `${bad} issue${bad > 1 ? "s" : ""}` : "All 5 checks ready"}</span></div></button>`; }).join("");
       if (!s) return;
-      const ch = hubChecks(s, id), bad = ch.filter((x) => !x[2]), k = s.kpis || {}, max = Math.max(...rows.map((r) => r.kpis?.total_cost_eur || 0), 1);
+      const ch = hubChecks(s, id, d.kpis), bad = ch.filter((x) => !x[2]), k = s.kpis || {}, max = Math.max(...rows.map((r) => r.kpis?.total_cost_eur || 0), 1);
       const low = Math.min(...rows.filter((r) => r.ok).map((r) => r.kpis.total_cost_eur));
       const parts = s.ok ? [["Rebooking & care", k.pax_cost_eur || 0, "#e8c79a"], ["Delays", 100 * (k.network_delay_added || 0), "#e8b2a4"]].filter((p) => p[1] > 0) : [];
       $("#hub-rest").innerHTML = `<div class="hub-sec"><i>2</i>CHECKS FOR: ${h(s.title).toUpperCase()}</div>

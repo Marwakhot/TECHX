@@ -24,7 +24,7 @@ h1, h2, h3, h4 { font-family:var(--font); color:var(--ink); font-weight:500; }
 .small { font-size:14px; }
 .muted { color:var(--muted); }
 /* small uppercase labels, as on the reference (bold, uppercase, still tightly tracked) */
-.app th, .live-head, .brand-sub, .dl-cap, .nav-group, .ga-sep, .ga-dl dt, .dl-fields > dt, .px-sum .it span, .x-board .lbl, .ar-rec-h, .px-dgrid h4 {
+.app th, .live-head, .dl-cap, .nav-group, .ga-sep, .ga-dl dt, .dl-fields > dt, .px-sum .it span, .x-board .lbl, .ar-rec-h, .px-dgrid h4 {
   font-family:var(--font); font-stretch:112%; font-size:11px !important; font-weight:700; text-transform:uppercase; letter-spacing:.04em !important; color:var(--muted); }
 a { color:var(--ink); font-weight:600; text-decoration:underline; text-decoration-color:var(--accent); text-decoration-thickness:1px; text-underline-offset:4px; }
 a:hover { color:var(--accent); }
@@ -258,9 +258,8 @@ details.how > div { background:var(--section); border:0; border-left:2px solid v
 .globe-stage { padding-top:96px; }
 .brand { top:13vh; left:-2vw; right:-2vw; z-index:3; transform-origin:50% 0; }
 .app .brand-name { font-family:var(--font); font-stretch:125%; font-weight:500; letter-spacing:-.085em; line-height:.84; white-space:nowrap;
-  font-size:clamp(64px, 19.5vw, 470px); margin:0; padding-right:.08em; }
+  font-size:clamp(72px, 21.5vw, 520px); margin:0; padding-right:.08em; }
 .app .brand-name span { background:linear-gradient(180deg, #312726 0%, #211a1a 40%, #0c0a0a 75%, #000 100%); -webkit-background-clip:text; background-clip:text; color:transparent; }
-.brand-sub { margin-top:26px; color:var(--muted); letter-spacing:.06em !important; }
 .globe-disc { z-index:1; background:radial-gradient(circle at 40% 35%, #2c231b 0%, #1b1815 60%, #0f0c0b 100%); box-shadow:none; }
 .live-side { z-index:2; background:#fff8edf2; border:0; border-top:2px solid var(--ink); border-radius:0; box-shadow:0 20px 50px #1b18151f; backdrop-filter:none; padding:20px 22px; }
 .live-head { color:var(--muted); }

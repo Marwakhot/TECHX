@@ -333,7 +333,7 @@ def test_gate_agent_lends_the_gate_a_delay_frees_to_the_one_flight_that_fits():
     assert "LH1124" in g["unplaced"]
     monitor.apply_eta("AA70", 60, "test")  # AA70 lands T+270: its gate B26 stands empty until T+255
     g = SP.gate_agent()
-    assert {(p["gate"], p["flight_id"], p["type"], p["owner"]) for p in g["picks"]} == {("A13", "EK813", "free", "EK812"), ("B26", "LH1124", "lend", "AA70")}
+    assert {(p["gate"], p["flight_id"], p["type"], p["owner"]) for p in g["picks"]} == {("A13", "EK813", "free", "EK812"), ("B12", "AZ411", "free", "AZ410"), ("B26", "LH1124", "lend", "AA70")}
     assert SP.gates_for("AA70", g)["actions"] == [{"kind": "GATE_LOAN", "flight_id": "LH1124", "gate": "B26"}]
     assert next(n for n in SP.gate_facts()["needs"] if n["flight_id"] == "LH1124")["options"][0]["gate"] == "B26"
 

@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import server  # noqa: E402
 
-server.ensure_db()  # fresh demo data in /tmp on each cold start (about 0.2 s)
+server.ensure_db(fresh=True)  # fresh demo data in /tmp on each cold start (about 0.2 s)
 
 
 class handler(server.Handler):  # Vercel looks for a BaseHTTPRequestHandler subclass named `handler`

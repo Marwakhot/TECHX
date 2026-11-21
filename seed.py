@@ -101,7 +101,7 @@ GATES = [("V95", "REMOTE", None), ("V106", "REMOTE", None), ("V108", "REMOTE", N
                                       ("A14", "LH400"), ("A16", "LH404"), ("A17", "LH1286"), ("A18", "LH1034"), ("A19", "LH1040"),
                                       ("A21", "LH1044"), ("A23", "LH1830"), ("A24", "LH1836"), ("A25", "LH1500"), ("A26", "LH1504"))] + [(f[12], "REMOTE" if f[12].startswith("V") else "CONTACT", f[10]) for f in INBOUND]
 ONWARD_GATES = {flight: gate for gate, _, flight in GATES if flight and flight.startswith("LH")}  # onward flights without one: not yet assigned
-SEED_VERSION = "4"  # bump when the generated data changes: an older database is rebuilt on start (audit replay re-seeds from this code)
+SEED_VERSION = "6"  # bump when the generated data changes: an older database is rebuilt on start (audit replay re-seeds from this code)
 TASKS = [("DEBOARD", "Deboarding", 25, ""), ("BAGS_OFF", "Ramp bags unload", 30, ""), ("MX_CHECK", "Maintenance check", 40, ""),
          ("CLEAN", "Cabin cleaning", 25, "DEBOARD"), ("CATERING", "Catering", 30, "DEBOARD"), ("FUEL", "Fuelling", 35, "DEBOARD"),
          ("BAGS_ON", "Ramp bags load", 30, "BAGS_OFF"), ("BOARDING", "Boarding", 35, "CLEAN,CATERING,FUEL,MX_CHECK"),
@@ -121,15 +121,19 @@ EK812_CALLS = [
 #  - mx:    a NO-GO weather-radar item from the tech log with a 70-min inspection that fits on schedule but not after a delay
 # Built AFTER the rest with its own random generator, so every other flight's data stays exactly the same.
 DEMO = {"id": "AZ410", "origin": "FCO", "lat": 41.80, "lon": 12.25, "arr": 60, "block": 115, "km": 960, "type": "A320",
-        "tail": "EI-DTB", "out": "AZ411", "dep": 180, "gate": "C11", "mx_minutes": 70,
+        "tail": "EI-DTB", "out": "AZ411", "dep": 180, "gate": "V171", "mx_minutes": 70,
+        # AZ411 stands on a remote stand: bags need 60 min to transfer (45 + 15), so after a 60-min delay the Prague passengers
+        # (50 min to LH1452) still make their flight but their checked bags do not -> a baggage issue to fix on the passengers page
+        "onward": [("LH1452", "PRG", 170, 410, 0, "B1"), ("LH1456", "PRG", 320, 410, 8, "B10")],
         "duty": [430, 425, 0, 0, 0, 0],  # CPT, FO already on duty; cabin crew report fresh
         "standby": [("SB-A320-7", "CPT", "A320", "STANDBY", 0, "Crew room T2", 18), ("SB-A320-8", "FO", "A320", "STANDBY", 0, "Crew room T1", 9)],
         "mx": ("M-6", "EI-DTB", "Weather radar intermittent (tech log)", "NO-GO", "OPEN"),
         "pax": [("LH1830", ["PRM", "STANDARD", "STANDARD", "STANDARD"]), ("LH1500", ["UM", "STANDARD", "STANDARD"]),
-                ("LH1282", ["ELDERLY", "STANDARD", "STANDARD"]), ("LH760", ["STANDARD"] * 8)],
+                ("LH1282", ["ELDERLY", "STANDARD", "STANDARD"]), ("LH1286", ["STANDARD"] * 8), ("LH1452", ["ELDERLY", "STANDARD", "STANDARD"])],
         "calls": [("T-20", "Captain AZ410", "OCC, AZ410 from Rome, on schedule. The weather radar went intermittent in cruise. It's in the "
                                             "tech log as a NO-GO for the next sector, engineering must clear it before AZ411."),
-                  ("T-15", "Dispatch AZ410", "AZ410 from FCO on schedule, no delay reported.")]}
+                  ("T-15", "Dispatch AZ410", "AZ410 from FCO on schedule, no delay reported."),
+                  ("T-12", "Ramp control", "AZ411 is planned on remote stand V171, no jet bridge: bus boarding and a longer bag transfer.")]}
 FIRST = "Aisha Omar Lena Jonas Priya Diego Mei Noah Sara Yusuf Elena Tom Fatima Luca Hana Ivan".split()
 LAST = "Khan Muller Rossi Garcia Chen Patel Novak Silva Haddad Becker Kim Okafor Larsen Dubois".split()
 
@@ -249,7 +253,12 @@ def _demo_flight(con, seat):
                  D["out"], "ENROUTE"))
     con.execute("INSERT INTO flights VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (D["out"], "OUTBOUND", "FRA", D["origin"], None, None, D["dep"], 0, D["block"], D["km"], D["type"], D["tail"], D["gate"], None, "SCHEDULED"))
-    con.execute("INSERT INTO gates VALUES (?,?,?)", (D["gate"], "CONTACT", D["out"]))
+    con.execute("INSERT INTO gates VALUES (?,?,?)", (D["gate"], "REMOTE" if D["gate"].startswith("V") else "CONTACT", D["out"]))
+    for fl, dst, dep, km, free, gate in D["onward"]:  # demo-only onward flights (kept out of ONWARD so the other flights' data is unchanged)
+        con.execute("INSERT INTO flights(id,kind,origin,dest,t_min,block_min,distance_km,aircraft_type,gate) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (fl, "ONWARD", "FRA", dst, dep, 75, km, "A320", gate))
+        con.execute("INSERT INTO gates VALUES (?,?,?)", (gate, "CONTACT", fl))
+        con.executemany("INSERT INTO seats VALUES (?,?,NULL)", [(fl, seat(fl)) for _ in range(free)])
     con.executemany("INSERT INTO tasks VALUES (?,?,?,?,?,?)",
                     [(D["id"], tk[0], tk[1], D["mx_minutes"] if tk[0] == "MX_CHECK" else tk[2], tk[3], "PENDING") for tk in TASKS])
     for j, (role, used) in enumerate(zip(ROLES, D["duty"])):
@@ -257,7 +266,7 @@ def _demo_flight(con, seat):
     con.executemany("INSERT INTO crew VALUES (?,?,?,?,?,NULL,?,?,?)", [(s[0], name(), *s[1:]) for s in D["standby"]])
     con.execute("INSERT INTO maintenance VALUES (?,?,?,?,?,NULL,NULL)", D["mx"])
     con.executemany("INSERT INTO comms(flight_id, at, speaker, text) VALUES (?,?,?,?)", [(D["id"], *c) for c in D["calls"]])
-    dest = {f[0]: f[1] for f in ONWARD}
+    dest = {f[0]: f[1] for f in ONWARD} | {f[0]: f[1] for f in D["onward"]}
     k = 0
     for onward, tiers in D["pax"]:
         for tier in tiers:
@@ -265,8 +274,16 @@ def _demo_flight(con, seat):
             pid = f"P9{k:03d}"
             con.execute("INSERT INTO passengers VALUES (?,?,?,?,?,?)", (pid, name(), tier, D["id"], onward, dest[onward]))
             con.execute("INSERT INTO seats VALUES (?,?,?)", (onward, seat(onward), pid))
-            for b in range(rng.choice([0, 1, 1, 2])):
+            for b in range(max(rng.choice([0, 1, 1, 2]), onward == "LH1452")):  # every Prague passenger has a checked bag
                 con.execute("INSERT INTO bags(id, pax_id, flight_id) VALUES (?,?,?)", (f"B9{k:03d}{b}", pid, onward))
+
+
+def demo_history():
+    """The AZ410 demo's Decision log starts with one refused decision: Dispatch tried to release AZ411 on schedule while the
+    weather-radar NO-GO (M-6) had no engineer sign-off. Staged through the real guard dry run, so the refusal is the guards' own."""
+    import services as S  # local import: services does not depend on the seed
+    S.stage_controller_schedule_change("AZ410", "Release AZ411 on schedule", [{"kind": "DEPARTURE_RELEASE", "flight_id": "AZ411"}],
+                                       "Dispatch AZ410")
 
 
 if __name__ == "__main__":

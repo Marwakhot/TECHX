@@ -146,17 +146,6 @@
   width: 25vw;
 }
 
-.cruising-left {
-  top: 24%;
-  left: 5vw;
-}
-
-.cruising-right {
-  right: 5vw;
-  bottom: 18%;
-  text-align: right;
-}
-
 .cabin-copy .cabin-scroll {
   bottom: 4vh;
   left: 50%;
@@ -246,13 +235,5 @@
   /* Above and below the window instead of across it. */
   .cabin-copy p {
     width: 80vw;
-  }
-
-  .cruising-left {
-    top: 10vh;
-  }
-
-  .cruising-right {
-    bottom: 10vh;
   }
 }

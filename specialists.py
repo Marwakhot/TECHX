@@ -678,7 +678,7 @@ def gate_facts():
     return {"buffer_min": buf, "idle_gates": idle, "free_contact_gates": free, "needs": needs, "lent": lent}
 
 
-def _gate_owner(f, n, o):
+def _gate_owner(n, o):
     """The inbound flight whose decision carries this move: a lent gate belongs to the late arrival that frees it."""
     return o["late_inbound"] if o["type"] == "lend" else n["inbound"]
 
@@ -714,7 +714,7 @@ def _gate_decide(f, raw):
         if n["flight_id"] in picks:
             o, reason, by, reason_by, rejected = picks[n["flight_id"]]
             out.append({"flight_id": n["flight_id"], "gate": o["gate"], "type": o["type"], "from": n["now_at"], "need": n["kind"],
-                        "owner": _gate_owner(f, n, o), "late_inbound": o.get("late_inbound"), "holder": o.get("holder"),
+                        "owner": _gate_owner(n, o), "late_inbound": o.get("late_inbound"), "holder": o.get("holder"),
                         "leaves": o["leaves"], "free_until": o.get("free_until"), "protected_pax": n["protected_pax"],
                         "reason": reason, "reason_by": reason_by, "by": by, **rejected})
     unplaced = [n["flight_id"] for n in f["needs"] if n["flight_id"] not in picks]

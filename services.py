@@ -320,11 +320,17 @@ def _rebook(con, inb, assignments, chaos=False):
     chaos = "seat" if chaos is True else chaos
     need = G.bag_mct(_remote(con, inb))
     at_risk = {p["id"]: p for p in _at_risk(con, inb)}
+    # passengers who make their flight but whose checked bags cannot (connection < bag MCT) may be moved too
+    bag_short = {p["id"]: p for p in rows(con, """SELECT p.id, p.name, p.tier, p.dest, s.flight_id, s.seat_no, f.t_min + f.delay_min AS eff
+        FROM passengers p JOIN seats s ON s.pax_id = p.id JOIN flights f ON f.id = s.flight_id
+        WHERE p.inbound = ? AND f.t_min + f.delay_min - ? < ? AND EXISTS (SELECT 1 FROM bags b WHERE b.pax_id = p.id)""",
+                                                  (inb["id"], inb["eff"], need)) if p["id"] not in at_risk}
+    movable = at_risk | bag_short
     ids = [a.get("pax_id") for a in assignments]
-    if len(set(ids)) != len(ids) or not set(ids) <= at_risk.keys():
-        raise GuardViolation("Rebooking may only move distinct, currently at-risk passengers")
-    G.check_vulnerable_protection(assignments, list(at_risk.values()))
-    batch = G.priority_order([{**at_risk[a["pax_id"]], "to": str(a["to"]), "seat": a.get("seat")} for a in assignments])
+    if len(set(ids)) != len(ids) or not set(ids) <= movable.keys():
+        raise GuardViolation("Rebooking may only move distinct, currently at-risk passengers (or passengers whose bags miss the connection)")
+    G.check_vulnerable_protection([a for a in assignments if a.get("pax_id") in at_risk], list(at_risk.values()))
+    batch = G.priority_order([{**movable[a["pax_id"]], "to": str(a["to"]), "seat": a.get("seat")} for a in assignments])
     for i, a in enumerate(batch, 1):
         f = _get(con, "flights", a["to"], "flight")
         if f["kind"] != "ONWARD" or f["dest"] != a["dest"] or f["eff"] - inb["eff"] < MCT:

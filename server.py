@@ -70,7 +70,7 @@ POST = {
     "/api/approve": lambda b: S.approve_change(b["id"], b.get("controller"), b.get("pin"), bool(b.get("approve", True))),
     "/api/signoff": lambda b: S.sign_off_maintenance(b["item_id"], b.get("licence")),
     "/api/task": lambda b: S.mark_task_done(b["flight_id"], b["task_id"]),
-    "/api/reset": lambda b: seed.build(S.DB) or monitor.reset() or curveballs.ensure() or {"status": "RESET"},
+    "/api/reset": lambda b: seed.build(S.DB) or monitor.reset() or curveballs.ensure() or seed.demo_history() or {"status": "RESET"},
     # live delay estimate from an ops feed / dispatcher (field data for an airborne inbound, not a decision; the agent re-plans)
     "/api/ops/eta": lambda b: monitor.apply_eta(b["flight_id"], b["delay_min"], str(b.get("source") or "Ops feed")[:80], b.get("reason"),
                                                 str(b.get("source") or "Ops feed")[:40]),
@@ -184,19 +184,29 @@ class Handler(BaseHTTPRequestHandler):
         self.run(POST[path], {**(body if isinstance(body, dict) else {}), **kw})
 
 
-def ensure_db():
-    # a demo console: every start begins from the same synthetic day (AVIANT_KEEP_DB=1 keeps the data across restarts)
-    if os.getenv("AVIANT_KEEP_DB") != "1" or not os.path.exists(S.DB) or not seed.has_current_schema(S.DB):
+def ensure_db(fresh=False):
+    """fresh=True (server start / Vercel cold start): begin from the same synthetic day (AVIANT_KEEP_DB=1 keeps the data).
+    Otherwise only build the database when it is missing or outdated."""
+    if (fresh and os.getenv("AVIANT_KEEP_DB") != "1") or not os.path.exists(S.DB) or not seed.has_current_schema(S.DB):
         seed.build(S.DB)
+        curveballs.ensure()
+        seed.demo_history()  # the AZ410 demo's refused release (Decision log: "Blocked by guards")
     curveballs.ensure()  # U-4 curveball tables + read-only duty trigger (idempotent)
 
 
 if __name__ == "__main__":
-    ensure_db()
     port = int(os.getenv("PORT", "8000"))
     # Localhost only on your machine; on Railway (or with HOST=0.0.0.0) listen on all interfaces so the platform can route to it.
     host = os.getenv("HOST") or ("0.0.0.0" if os.getenv("RAILWAY_ENVIRONMENT") else "127.0.0.1")
+    # Claim the port BEFORE touching the database. On Windows SO_REUSEADDR lets a second server bind the same port (requests
+    # then land on either one at random): refuse to start instead, so only one console ever answers on this port.
+    ThreadingHTTPServer.allow_reuse_address = os.name != "nt"
+    try:
+        httpd = ThreadingHTTPServer((host, port), Handler)
+    except OSError:
+        raise SystemExit(f"Port {port} is already in use: another Aviant server is running. Stop it first.") from None
+    ensure_db(fresh=True)
     print(f"Aviant OCC on http://{'localhost' if host == '127.0.0.1' else host}:{port}", flush=True)  # localhost: the 3D map's embed key is bound to it
     if monitor.start_background():
         print(f"Autonomous agent watching all flights every {monitor.INTERVAL_S} s", flush=True)
-    ThreadingHTTPServer((host, port), Handler).serve_forever()
+    httpd.serve_forever()

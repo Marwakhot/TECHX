@@ -4,15 +4,18 @@
 // their real gate, turn around, push back, taxi out and take off. Ground paths follow the real taxiways (fra-ground.json,
 // built from the same OpenStreetMap scene, ODbL). A simulated clock runs from now (T+0) at the chosen speed.
 const GatesTab = (() => {
-  const EMBED_KEY = "emb_edc8eece7f5f7f32879fb27280afaa66"; // browser key, bound to http://localhost:8000 (safe in page source)
+  // logostream embed keys are browser keys bound to one site address each (safe in page source). Add one per deployment.
+  const EMBED_KEYS = { "localhost:8000": "emb_edc8eece7f5f7f32879fb27280afaa66",
+    "techx-marwakhots-projects.vercel.app": "emb_cfeab4b2f7bba2c284f30c6f7fe22da9", "techx-git-main-marwakhots-projects.vercel.app": "emb_cfeab4b2f7bba2c284f30c6f7fe22da9" };
+  const EMBED_KEY = EMBED_KEYS[location.host];
   const SCRIPT = "https://airline.logostream.dev/embed/v1/airport-3d.js";
   const AIRLINE = { EK: "UAE", QR: "QTR", AC: "ACA", UA: "UAL", ET: "ETH", AI: "AIC", TK: "THY", SA: "SAA", MS: "MSR", AA: "AAL", LH: "DLH", AZ: "ITY" };
   const TYPE = { B777: "B77W", B788: "B788", A359: "A359", A320: "A320", A380: "A388" };
   const SPEEDS = [1, 5, 20, 60];
   const R = 6371008.8, RAD = Math.PI / 180;
   // motion model (metres, metres per second)
-  const APP_M = 12000, GLIDE = Math.tan(3 * RAD), TOUCH_M = 350, EXIT_M = 2100, V_APP = 72, V_EXIT = 15, V_TAXI = 9;
-  const ROLL_M = 2200, V_ROT = 80, CLIMB_M = 6000, CLIMB_H = 650, LINEUP_S = 30, PUSH_S = 90;
+  const APP_M = 5000, GLIDE = Math.tan(3 * RAD), TOUCH_M = 350, EXIT_M = 2100, V_APP = 72, V_EXIT = 15, V_TAXI = 9;
+  const ROLL_M = 2200, V_ROT = 80, CLIMB_M = 3000, CLIMB_H = 400, LINEUP_S = 30, PUSH_S = 90;
   const X = { speed: 20, t: 0, paused: false, night: false, list: "arr", sel: null, data: null, ground: null, tracks: new Map(), start: Date.now(), towIn: {} };
   const TOW_FROM = "V106"; // remote parking a borrowing flight is towed from
   const q = (s) => document.querySelector(s);
@@ -31,7 +34,7 @@ const GatesTab = (() => {
           <div class="gt-demo"><h4>Live: a delay frees a gate</h4>
             <p class="small muted">Report a real delay on an arrival. Its gate goes idle and the Gate agent re-decides on the spot.</p>
             <div class="gt-demo-row"><select id="gt-demo-f" aria-label="Arrival"></select><select id="gt-demo-m" aria-label="Minutes late">
-              <option>30</option><option selected>45</option><option>60</option><option>90</option></select><button data-gt="demo">Report delay</button></div>
+              <option>45</option><option selected>60</option><option>90</option></select><button data-gt="demo">Report delay</button></div>
             <ol class="gt-feed" id="gt-feed"></ol></div>
           <div class="gt-stats" id="gt-stats"></div>
           <div class="mx-sum gt-sum" id="gt-sum"></div>
@@ -71,20 +74,20 @@ const GatesTab = (() => {
     const b = X.data.schedule.find((f) => f.id === p.flight_id), late = X.data.schedule.find((f) => f.kind === "TURN" && f.out && f.gate === p.gate && f.id !== p.flight_id);
     if (!b) return;
     const follow = (id) => { const x = phaseOf(id); if (x?.ac?.registration) X.map?.focusOn({ registration: x.ac.registration }); };
-    note(`Approved. <b>${h(b.id)}</b> is towed from remote parking ${TOW_FROM} to gate <b>${h(p.gate)}</b>…`, "run");
+    note(`Approved. <b>${h(b.id)}</b> is towed from remote parking ${towFrom(b)} to gate <b>${h(p.gate)}</b>…`, "run");
     X.towIn[b.id] = { start: X.t + 0.05 };
-    const tow = track("tow", b, towTrack); X.speed = Math.max(2, (tow?.dur || 200) / 22); // ~22 s on screen
+    const tow = track("tow", b, towTrack); X.speed = Math.max(2, (tow?.dur || 200) / 10); // ~10 s on screen
     await sleep(150); follow(b.id);
     await until(() => phaseOf(b.id)?.phase === "parked");
-    note(`<b>${h(b.id)}</b> is parked at <b>${h(p.gate)}</b> and boarding.`); X.speed = 1; await sleep(4500);
+    note(`<b>${h(b.id)}</b> is parked at <b>${h(p.gate)}</b> and boarding.`); X.speed = 1; await sleep(2500);
     note(`Departure: <b>${h(b.id)}</b> pushes back and takes off at ${T(b.dep)}…`, "run");
-    X.t = Math.max(X.t, b.dep - 0.2); const dep = track("dep", b, departureTrack); X.speed = (dep?.dur || 400) / 30;
+    X.t = Math.max(X.t, b.dep - 0.2); const dep = track("dep", b, departureTrack); X.speed = (dep?.dur || 400) / 14;
     await sleep(150); follow(b.id);
     await until(() => phaseOf(b.id)?.phase === "gone");
     note(`<b>${h(b.id)}</b> is airborne. Gate <b>${h(p.gate)}</b> is clear again.`);
     if (late) {
       const arr = track("arr", late, arrivalTrack); note(`<b>${h(late.id)}</b> lands ${T(late.arr)} and taxis into its own gate <b>${h(p.gate)}</b>…`, "run");
-      X.t = Math.max(X.t, late.arr - (arr?.dur || 560) / 60 + 1.5); X.speed = (arr?.dur || 560) / 35;
+      X.t = Math.max(X.t, late.arr - (arr?.dur || 560) / 60 + 1.5); X.speed = (arr?.dur || 560) / 15;
       await sleep(150); follow(late.id);
       await until(() => phaseOf(late.id)?.phase === "parked");
       note(`<b>${h(late.id)}</b> is at <b>${h(p.gate)}</b>. The gate did a full turn while ${h(late.id)} was late.`);
@@ -115,8 +118,12 @@ const GatesTab = (() => {
       if (p) {
         done("ok", `<b>Gate agent</b>: lend <b>${h(p.gate)}</b> to <b>${h(p.flight_id)}</b> (leaves ${T(p.leaves)}). ${h(p.reason)} <small>${src}</small>`,
           `<button data-gt-approve="${k}">Approve with PIN…</button>`);
-        X.sel = p.flight_id; X.demoPick = { p, late: fid };
-      } else done("warn", `<b>Gate agent</b>: ${h(f.gate)} is idle, but no flight that needs a gate is gone before ${h(fid)} lands. <small>${src}</small>`);
+        X.sel = p.flight_id;
+      } else {
+        const lent = (X.data.board.find((g) => g.gate === f.gate) || {}).state === "lent";
+        done("warn", lent ? `<b>Gate agent</b>: ${h(f.gate)} is already lent out from an earlier run. Click <b>Reset demo</b> (top right) to start the day again.`
+          : `<b>Gate agent</b>: ${h(f.gate)} is idle until ${T(f.arr + min - X.data.buffer_min)}, but no flight that needs a gate is gone by then (each needs its departure plus 30 min of room for a hold). <small>${src}</small>`);
+      }
     } catch (e) { done("bad", h(e.message)); } finally { X.demoBusy = false; }
   }
   async function ground() {
@@ -159,22 +166,26 @@ const GatesTab = (() => {
   const seg = (pts, v0, v1, h0 = 0, h1 = 0, back = false) => { const cum = [0];
     for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
     const len = cum.at(-1) || 0.001; return { pts, cum, len, v0, v1, h0, h1, back, dur: len / ((v0 + v1) / 2) }; };
-  const hash = (s) => [...String(s)].reduce((a, c) => a + c.charCodeAt(0), 0);
 
   function arrivalTrack(f) {
     const stand = X.ground.gates[gateKey(f.gate)]; if (!stand) return null;
-    const rw = runway(hash(f.id) % 2 ? "07R/25L" : "07C/25C", "east"); // FRA lands westbound (25L / 25C) in the usual westerly flow
+    const d2 = (r) => (along(r.thr, r.dir, EXIT_M)[0] - stand[0]) ** 2 + (along(r.thr, r.dir, EXIT_M)[1] - stand[1]) ** 2;
+    const rw = [runway("07R/25L", "east"), runway("07C/25C", "east")].sort((a, b) => d2(a) - d2(b))[0]; // westerly flow, runway nearest the gate
     const td = along(rw.thr, rw.dir, TOUCH_M), ex = along(rw.thr, rw.dir, EXIT_M), far = along(rw.thr, rw.dir, -APP_M);
     const taxi = route(near(ex), near(stand));
     return [seg([far, td], V_APP, V_APP, (APP_M + TOUCH_M) * GLIDE, 0), seg([td, ex], V_APP - 8, V_EXIT), seg([ex, ...taxi, [stand[0], stand[1]]], V_TAXI, V_TAXI)];
   }
-  function towTrack(f) { // remote parking -> the lent gate, at taxi speed
-    const a = X.ground.gates[TOW_FROM], b = X.ground.gates[gateKey(f.gate)]; if (!a || !b) return null;
+  function towTrack(f) { // nearest remote stand -> the lent gate, at taxi speed
+    const a = X.ground.gates[towFrom(f)], b = X.ground.gates[gateKey(f.gate)]; if (!a || !b) return null;
     return [seg([[a[0], a[1]], ...route(near(a), near(b)), [b[0], b[1]]], V_TAXI, V_TAXI)];
   }
+  const towFrom = (f) => { const b = X.ground.gates[gateKey(f.gate)]; if (!b) return TOW_FROM;
+    return Object.keys(X.ground.gates).filter((k) => /^V\d/.test(k)).sort((x, y) => { const p = X.ground.gates[x], q2 = X.ground.gates[y];
+      return Math.hypot(p[0] - b[0], p[1] - b[1]) - Math.hypot(q2[0] - b[0], q2[1] - b[1]); })[0] || TOW_FROM; };
   function departureTrack(f) {
     const stand = X.ground.gates[gateKey(f.gate)]; if (!stand) return null;
-    const rw = hash(f.id) % 2 ? runway("18", "north") : runway("07C/25C", "east"); // Startbahn West (18) or 25C, both westerly-flow departures
+    const rw = [runway("18", "north"), runway("07C/25C", "east"), runway("07R/25L", "east")]
+      .sort((a, b) => Math.hypot(a.thr[0] - stand[0], a.thr[1] - stand[1]) - Math.hypot(b.thr[0] - stand[0], b.thr[1] - stand[1]))[0]; // runway start nearest the gate
     const n0 = near(stand), lift = along(rw.thr, rw.dir, ROLL_M), gone = along(rw.thr, rw.dir, ROLL_M + CLIMB_M);
     const push = X.ground.nodes[n0], taxi = route(n0, near(rw.thr));
     const pushSeg = seg([[stand[0], stand[1]], push], 1, 1, 0, 0, true); pushSeg.dur = PUSH_S;
@@ -210,7 +221,7 @@ const GatesTab = (() => {
       }
       const tow = X.towIn[f.id];
       if (tow) { const k = track("tow", f, towTrack);
-        if (s < tow.start * 60) { out.push({ f, phase: "remote", ac: { ...base, gate: TOW_FROM } }); continue; }
+        if (s < tow.start * 60) { out.push({ f, phase: "remote", ac: { ...base, gate: towFrom(f) } }); continue; }
         if (k && s < tow.start * 60 + k.dur) { out.push({ f, phase: "taxi-in", ac: move(base, at(k.tr, s - tow.start * 60), "boarding") }); continue; } }
       const dep = f.dep ?? 1e9;
       if (s < dep * 60) {
@@ -228,6 +239,8 @@ const GatesTab = (() => {
   // ---------- 3D map (logostream element, as published) ----------
   async function mapInit() {
     const box = q("#gt-map"); if (!box) return;
+    if (!EMBED_KEY) { box.innerHTML = `<p class="gt-err">The 3D map has no embed key for ${h(location.host)} yet (logostream keys are bound to one site address).<br>
+      Everything else on this page works. Create a key for this address and add it to EMBED_KEYS in static/gates.js.</p>`; return; }
     try {
       if (!customElements.get("logostream-airport-3d")) {
         if (!document.querySelector(`script[src="${SCRIPT}"]`)) {

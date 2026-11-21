@@ -98,6 +98,10 @@ def analyse(fid):
     for p in d["passengers"]:
         for o in p["options"]:
             alts_by_dest.setdefault(p["dest"], {})[o["id"]] = o
+    # passengers who make their flight but whose bags do not (bag-only issue) need the same reachable flights to choose from
+    with closing(S.connect()) as con:
+        for o in S._alternatives(con, f):
+            alts_by_dest.setdefault(o["dest"], {}).setdefault(o["id"], o)
     conflicts, out = [], []
     for p in d["passengers"]:
         onward = flights.get(p["onward"])
