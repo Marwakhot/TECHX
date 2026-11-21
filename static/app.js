@@ -262,6 +262,8 @@ const crewTab = () => { const agentP = api(`/api/agents/${S.flight}/crew`).catch
         <select data-crew="${h(c.id)}" aria-label="Choose standby for ${h(c.name)}"><option value="">${c.options.length ? (k === "over" ? "or choose another…" : "Swap with standby…") : "no legal standby"}</option>${c.options.map((s) =>
           `<option value="${h(s.id)}" ${busy.has(s.id) ? "disabled" : ""}>${h(s.id)} · ${h(s.name)} · ${h(s.location)} (${s.walk_min} min)${busy.has(s.id) ? " · already proposed" : ""}</option>`).join("")}</select></div></div>`;
   };
+  // "Swap all": every over-limit member with a suggested standby, as ONE decision (one PIN; all swaps apply together or none)
+  const allSwaps = over.filter((c) => best(c)).map((c) => ({ kind: "CREW_SWAP", crew_id: c.id, standby_id: best(c).id }));
   const vis = crew.filter((c) => CREW_F.f === "all" || st(c) === CREW_F.f);
   const deck = vis.filter((c) => /^(CPT|FO|SO|CAP|CAPT)/i.test(c.role)), cabin = vis.filter((c) => !deck.includes(c));
   const group = (t, list) => list.length ? `<section class="cw-group"><div class="cw-gh"><h3>${t}</h3><span class="small muted">${list.filter((c) => c.margin < 0).length} of ${list.length} over limit</span></div>${list.map(row).join("")}</section>` : "";
@@ -280,6 +282,9 @@ const crewTab = () => { const agentP = api(`/api/agents/${S.flight}/crew`).catch
     </section>
     ${agentSec}
     ${over.length && over.length === crew.length ? '<div class="px-alert" role="alert">⚠ Every crew member is over the legal limit: a full standby crew is needed for this departure.</div>' : ""}
+    ${allSwaps.length ? `<div class="row" style="margin:10px 0"><button data-swapall="1">Swap all ${allSwaps.length} over-limit crew at once</button>
+      <span class="small muted">Uses the suggested standby for each · one approval (PIN) · applied together or not at all${over.length > allSwaps.length
+        ? ` · ${over.length - allSwaps.length} without a legal standby stay listed` : ""}</span></div>` : ""}
     <div class="cw-top"><div class="cw-filter" role="group" aria-label="Filter crew">${[["all", "All", crew.length], ["over", "Over limit", over.length], ["tight", "Tight (< 60 min)", tight.length],
       ["ok", "Legal", crew.length - over.length - tight.length]].map(([k, l, n]) => `<button class="${CREW_F.f === k ? "on" : ""}" data-cf="${k}" aria-pressed="${CREW_F.f === k}">${l} <span>${n}</span></button>`).join("")}</div>
       <div class="cw-key small muted"><i class="used"></i>duty used <i class="proj"></i>to departure <i class="over"></i>over limit <b class="lim"></b>legal ceiling</div></div>
@@ -292,6 +297,8 @@ const crewTab = () => { const agentP = api(`/api/agents/${S.flight}/crew`).catch
   el.onclick = (e) => {
     const f = e.target.closest("[data-cf]"); if (f) { CREW_F.f = f.dataset.cf; return mainView(); }
     const b = e.target.closest("[data-swap]"); if (b) { const [cid, sid] = b.dataset.swap.split("|"); swap(cid, sid); }
+    if (e.target.closest("[data-swapall]")) decide(d.flight.id, `Crew swap: ${allSwaps.length} crew for ${o.id}`, allSwaps,
+      (r) => (r?.status === "APPROVED" || r?.status === "PENDING") && mainView());
   };
   el.onchange = (e) => { const s = e.target; if (s.dataset.crew && s.value) swap(s.dataset.crew, s.value, () => (s.value = "")); };
 }); };

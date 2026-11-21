@@ -130,6 +130,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(400, {"error": f"Missing or unknown field: {e.args[0] if e.args else ''}"})
         except (GuardViolation, ValueError, TypeError) as e:
             self.reply(400, {"error": str(e)})
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True  # the browser left the page before the answer arrived: the work is done, nothing to report
         except Exception:  # noqa: BLE001 - never leak internals to the client
             traceback.print_exc()
             self.reply(500, {"error": "Internal error"})
