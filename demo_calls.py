@@ -43,7 +43,7 @@ DEMO_CALLS = [
         ("Elena Novak", "Maintenance Control", "I'm assigning engineer E1, K. Weber, to M-1."),
         ("K. Weber", "Certifying Engineer", "Weber here, at line ops T1. I can be at the aircraft in ten minutes and the inspection should be finished by {+45}."),
         (*CONTROLLER, "Decision: we hold EK813 until the sign-off is recorded. Retime EK813 by sixty minutes."),
-        ("Elena Novak", "Maintenance Control", "EK813 is on remote stand R4 and the ambulift is late for the PRMs. Gate B12 is a free contact gate."),
+        ("Elena Novak", "Maintenance Control", "EK813 is on remote stand V94 and the ambulift is late for the PRMs. Gate B12 is a free contact gate."),
         (*CONTROLLER, "Then move EK813 to gate B12. Hub control, confirm engineer access to the aircraft by {+10}."),
     ]},
 ]

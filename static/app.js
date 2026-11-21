@@ -1,4 +1,6 @@
 // Aviant OCC front end: hash router, no build step. All server text is escaped with h().
+// The 3D map's embed key is bound to http://localhost:<port>; 127.0.0.1 is a different origin it refuses, so switch over.
+if (location.hostname === "127.0.0.1") location.replace(location.href.replace("//127.0.0.1", "//localhost"));
 const $ = (s) => document.querySelector(s);
 const h = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const sign = (n) => (n >= 0 ? "+" : "") + n;
@@ -23,7 +25,7 @@ const delayChip = (d) => `<span class="tag" style="background:${band(d)[3]};colo
 const tag = (t, cls = "") => `<span class="tag ${cls}">${h(t)}</span>`;
 const statusTag = (s) => tag(s, { APPROVED: "ok", PENDING: "warn", REJECTED: "warn" }[s] || "bad");
 const tierTag = (t) => tag(t, t === "STANDARD" ? "" : "warn");
-const ACT = { DELAY: (a) => `Delay ${a.flight_id} +${a.minutes} min`, GATE_CHANGE: (a) => `${a.flight_id} → gate ${a.gate}`,
+const ACT = { DELAY: (a) => `Delay ${a.flight_id} +${a.minutes} min`, GATE_CHANGE: (a) => `${a.flight_id} → gate ${a.gate}`, GATE_LOAN: (a) => `Lend gate ${a.gate} to ${a.flight_id}`,
   CREW_SWAP: (a) => `${a.crew_id} → ${a.standby_id}`, CREW_AUTOSWAP: (a) => `Swap every illegal crew member (${a.flight_id})`,
   REBOOK: (a) => `${a.pax_id} → ${a.to_flight}`, REBOOK_AT_RISK: (a) => `Rebook all at-risk pax of ${a.flight_id}, vulnerable first`,
   REBOOK_TIERS: (a) => `Rebook only ${(a.tiers || []).join(", ")} of ${a.flight_id}`,
@@ -61,7 +63,7 @@ const askAuth = (title, onOk, onCancel) => modal(title, [["controller", "Operati
   ["pin", "Controller PIN", "password", S.auth.pin]], async (v) => { S.auth = v; await onOk(v); }, onCancel);
 
 // the page a decision is taken on, kept with the controller's name so the Decision log shows where each decision came from
-const ORIGIN = { hub: "Decision hub", crew: "Crew page", pax: "Passengers page", mx: "Maintenance page", log: "Decision log" };
+const ORIGIN = { hub: "Decision hub", crew: "Crew page", pax: "Passengers page", mx: "Maintenance page", gates: "Gates page", log: "Decision log" };
 const originNow = () => (location.hash.startsWith("#/flight/") ? "Live report" : ORIGIN[S.tab] || "Console");
 function decide(fid, title, actions, after, chaos = false) {
   const origin = originNow();
@@ -74,10 +76,10 @@ function decide(fid, title, actions, after, chaos = false) {
 // ---------- main page (sections are chosen from the sidebar menu) ----------
 // Operations = the controller's daily workflow; Assurance = safety / compliance tools that prove the system can be trusted
 const SECTIONS = [["map", "Live overview", "Operations"], ["crew", "Crew", "Operations"], ["pax", "Connecting passengers", "Operations"],
-  ["mx", "Maintenance", "Operations"], ["hub", "Decision hub", "Operations"], ["log", "Decision log", "Operations"], ["attack", "Guard Attack Mode", "Assurance"], ["replay", "Audit replay", "Assurance"]];
+  ["mx", "Maintenance", "Operations"], ["gates", "Gates", "Operations"], ["hub", "Decision hub", "Operations"], ["log", "Decision log", "Operations"], ["attack", "Guard Attack Mode", "Assurance"], ["replay", "Audit replay", "Assurance"]];
 async function mainView() {
   $("#view").innerHTML = `<section id="tab"></section><section id="cb-slot"></section>`; // cb-slot: U-4 curveball panels (curveballs.js)
-  await { map: mapTab, crew: crewTab, pax: paxTab, mx: mxTab, hub: () => labView(S.flight), log: logTab, attack: () => Extras.attackTab($("#tab")), replay: () => Extras.replayTab($("#tab")) }[S.tab]();
+  await { map: mapTab, crew: crewTab, pax: paxTab, mx: mxTab, gates: () => GatesTab.mount($("#tab")), hub: () => labView(S.flight), log: logTab, attack: () => Extras.attackTab($("#tab")), replay: () => Extras.replayTab($("#tab")) }[S.tab]();
   const t = $("#tab")?.querySelector("h1, h2, h3"); if (t) { t.classList.add("tab-title"); t.parentElement.classList.add("tab-head"); }
   await Curveballs.mount(S.tab, $("#cb-slot")).catch((e) => toast(e.message, "bad"));
 }
@@ -322,7 +324,7 @@ async function reportView(id) {
     <div class="card"><div class="row between"><h3>Live situation report</h3>
       <span><span id="rsrc" class="muted small"></span> <button id="regen" class="ghost">↻ Regenerate</button></span></div><div id="report" class="report muted">Generating report…</div></div>
     <div class="stats">${stats.map(([t, v, s, bad]) => `<div class="stat ${bad ? "alert" : ""}"><div class="muted small">${h(t)}</div><div class="big">${h(v)}</div><div class="small">${h(s)}</div></div>`).join("")}</div>
-    <div class="card"><div class="row between"><h3>Top 3 agent suggestions <span class="muted small">· click one to see its passengers & bags</span></h3><a href="#/lab/${h(id)}"><button>Open Decision hub →</button></a></div><div id="sugg" class="grid3"></div></div>
+    <div class="card sugg-box"><div class="row between"><h3>Top 3 agent suggestions <span class="muted small">· click one to see its passengers & bags</span></h3><a href="#/lab/${h(id)}"><button>Open Decision hub →</button></a></div><div id="sugg" class="grid3"></div></div>
     <div class="card" id="x-pax" hidden></div>
     <div class="grid2"><div class="card"><h3>Calls on the system</h3><div class="row"><input id="spk" placeholder="Caller, e.g. Ramp control" maxlength="40">
       <button id="mic" class="ghost">Record call</button></div><textarea id="txt" rows="3" maxlength="2000" placeholder="Record (live transcription) or type the call…"></textarea>
@@ -403,12 +405,12 @@ function hubChecks(s, id) {
   if (!s.ok) return [["pax", "Passengers", false, "Refused by the guards.", s.reason, null]];
   const k = s.kpis, c = [];
   c.push(["pax", "Passengers", !k.at_risk && !k.vulnerable_at_risk, k.at_risk || k.vulnerable_at_risk ? `${k.at_risk} passengers still miss their connection${k.vulnerable_at_risk ? `, ${k.vulnerable_at_risk} of them vulnerable` : ""}.` : `All ${k.baseline_at_risk} at-risk passengers are protected.`,
-    `Affected: ${k.at_risk} passengers. Rebook them on the next free seats.`, ["#/tab/pax", "Passengers tab"]]);
+    `Affected: ${k.at_risk} passengers. Rebook them on the next free seats.`, [`#/tab/pax/${id}`, "Passengers tab"]]);
   const bags = (k.bags_rush || 0) + (k.bags_short_connection || 0);
   c.push(["bag", "Baggage", !bags, bags ? `${bags} bags may not make their passenger's flight.` : "All bags travel with their passengers.", `Affected: ${bags} bags. Move those passengers to a later flight or rush-tag the bags.`, [`#/flight/${id}`, "Live report"]]);
   const crewBad = k.crew_illegal > 0 || k.crew_min_margin < 0;
-  c.push(["crew", "Crew", !crewBad, crewBad ? `${k.crew_illegal || 1} crew member${k.crew_illegal > 1 ? "s" : ""} would exceed the duty limit.` : `Duty time is within limits (${k.crew_min_margin} min margin).`, "Affected: crew duty time. Assign standby crew.", ["#/tab/crew", "Crew tab"]]);
-  c.push(["mx", "Maintenance", !k.open_nogo, k.open_nogo ? `${k.open_nogo} NO-GO item${k.open_nogo > 1 ? "s" : ""} still unsigned.` : "Aircraft is cleared.", "Affected: open NO-GO items. A licensed engineer must sign them off.", ["#/tab/mx", "Maintenance tab"]]);
+  c.push(["crew", "Crew", !crewBad, crewBad ? `${k.crew_illegal || 1} crew member${k.crew_illegal > 1 ? "s" : ""} would exceed the duty limit.` : `Duty time is within limits (${k.crew_min_margin} min margin).`, "Affected: crew duty time. Assign standby crew.", [`#/tab/crew/${id}`, "Crew tab"]]);
+  c.push(["mx", "Maintenance", !k.open_nogo, k.open_nogo ? `${k.open_nogo} NO-GO item${k.open_nogo > 1 ? "s" : ""} still unsigned.` : "Aircraft is cleared.", "Affected: open NO-GO items. A licensed engineer must sign them off.", [`#/tab/mx/${id}`, "Maintenance tab"]]);
   // holds on other passengers' onward flights (the outbound's own retime is the turnaround, not a knock-on delay)
   const od = k.onward_delay_added ?? k.network_delay_added, net = od > 30;
   c.push(["net", "Downstream network", !net, od ? `Adds ${od} min of delay to onward flights.` : "No onward flights are affected.", `Affected: ${od} min of onward delay. Pick a plan with a shorter hold.`, null]);
@@ -474,11 +476,11 @@ async function loadLab(id, regenerate = false) {
 // Five operational areas, each a stage the Operations Manager reviews inside the hub. Only areas with actions need review.
 // [key, label, action kinds that belong to it, page with the full detail, page name]
 const REBOOK_KINDS = ["REBOOK", "REBOOK_AT_RISK", "REBOOK_TIERS"];
-const HUB_AREAS = [["net", "Downstream network", ["DELAY", "GATE_CHANGE", "DEPARTURE_RELEASE"], (id) => `#/flight/${id}`, "Live report"],
-  ["mx", "Maintenance", ["ASSIGN_ENGINEER", "SIGN_OFF"], () => "#/tab/mx", "Maintenance page"],
-  ["crew", "Crew", ["CREW_SWAP", "CREW_AUTOSWAP"], () => "#/tab/crew", "Crew page"],
-  ["bag", "Baggage", REBOOK_KINDS, () => "#/tab/pax", "Connecting passengers page"],
-  ["pax", "Passengers", REBOOK_KINDS, () => "#/tab/pax", "Connecting passengers page"]];
+const HUB_AREAS = [["net", "Downstream network", ["DELAY", "GATE_CHANGE", "GATE_LOAN", "DEPARTURE_RELEASE"], (id) => `#/flight/${id}`, "Live report"],
+  ["mx", "Maintenance", ["ASSIGN_ENGINEER", "SIGN_OFF"], (id) => `#/tab/mx/${id}`, "Maintenance page"],
+  ["crew", "Crew", ["CREW_SWAP", "CREW_AUTOSWAP"], (id) => `#/tab/crew/${id}`, "Crew page"],
+  ["bag", "Baggage", REBOOK_KINDS, (id) => `#/tab/pax/${id}`, "Connecting passengers page"],
+  ["pax", "Passengers", REBOOK_KINDS, (id) => `#/tab/pax/${id}`, "Connecting passengers page"]];
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 const hhmm = (ts) => String(ts || "").slice(11, 16);
 
@@ -502,6 +504,8 @@ function hubItems(area, s, d) {
     if (a.kind === "GATE_CHANGE") { const remote = d.gates.find((g) => g.id === o.gate)?.kind === "REMOTE";
       return { what: `Move ${a.flight_id} from ${o.gate} to gate ${a.gate}`, resolves: remote
         ? `Replaces a remote stand with a contact gate: no bus transfer, faster boarding and a shorter bag connection.` : `Frees up boarding and bag loading for ${a.flight_id}.` }; }
+    if (a.kind === "GATE_LOAN") return { what: `Lend gate ${a.gate} to ${a.flight_id}`, resolves: `${d.flight.id} is ${d.flight.delay_min} min late, so ${a.gate} would stand empty: `
+      + `${a.flight_id} boards there and is gone before ${d.flight.id} lands (Gate agent).` };
     return { what: `Release ${a.flight_id} for departure`, resolves: `${a.flight_id} is cleared to leave, with legal crew and no open NO-GO item.` };
   });
   if (area === "mx") return of(["ASSIGN_ENGINEER"]).map((a) => {
@@ -627,13 +631,16 @@ const drawMenu = () => ($("#sidebar nav").innerHTML = SECTIONS.map(([k, l, g], i
 document.addEventListener("keydown", (e) => e.key === "Escape" && menu(false));
 $("#reset").onclick = async () => { if (confirm("Reset the whole demo dataset?")) { await api("/api/reset", {}); S.tab = "map"; location.hash = "#/"; route(); } };
 async function route() {
-  const [, view, id] = location.hash.split("/");
+  const [, view, id, fid] = location.hash.split("/");
+  // #/tab/<tab>/<flight>: open that tab on that flight (and, on Maintenance, on that flight's open item)
+  if (view === "tab" && fid && /^[A-Z0-9]{2,8}$/.test(fid)) { S.flight = fid; S.focusFlight = id === "mx" ? fid : null; }
   $("#view").onclick = null;
   DecisionLog.stopPlayback(); // a live demo call in the Decision log stops (and its transcript drawer closes) when you leave it
   globe?._destructor(); globe = null; // stop the globe's render loop when leaving the map
   if (view === "tab" && SECTIONS.some(([k]) => k === id)) S.tab = id;
   if (view === "lab") { S.flight = id || S.flight; S.tab = "hub"; S.hubBack = null; } // old hub links open the Decision hub tab
   if (S.tab !== "hub") clearInterval(S.hubTimer);
+  document.body.classList.toggle("gt-on", view !== "flight" && S.tab === "gates"); // Gates tab: full-screen night map (gates.css)
   try { view === "flight" ? await reportView(id) : await mainView(); } catch (e) { toast(e.message, "bad"); }
   // a page opened from a hub stage counts as reviewing that stage; offer the way back
   if (S.hubBack && location.hash === S.hubBack.href) {

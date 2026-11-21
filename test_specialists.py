@@ -57,7 +57,7 @@ def test_offline_specialists_use_rules_and_pass_the_guards():
 
 def test_orchestrator_builds_scenarios_from_specialist_bundles_offline():
     rep = agent.get_report("EK812")
-    assert set(rep["agents"]) == {"crew", "passengers", "maintenance"} and "Crew agent:" in rep["report"]
+    assert set(rep["agents"]) == {"crew", "passengers", "maintenance", "gates"} and "Crew agent:" in rep["report"]
     crew = SP.crew("EK812")["actions"]
     for s in rep["suggestions"]:
         assert all(a in s["actions"] for a in crew) and {"kind": "ASSIGN_ENGINEER", "item_id": "M-1", "engineer_id": "E1"} in s["actions"]
@@ -186,8 +186,8 @@ def test_llm_orchestrator_names_bundles_and_code_expands_them(monkeypatch):
     rep = agent.get_report("EK812", force=True)
     s = rep["suggestions"][0]
     kinds = [a["kind"] for a in s["actions"]]
-    assert rep["source"].startswith("LLM") and s["use"] == ["CREW", "MAINTENANCE", "REBOOK"]
-    assert kinds.count("CREW_SWAP") == 6 and "ASSIGN_ENGINEER" in kinds and "REBOOK_AT_RISK" in kinds and kinds[-1] == "DELAY"
+    assert rep["source"].startswith("LLM") and s["use"] == ["CREW", "MAINTENANCE", "REBOOK", "GATES"]
+    assert kinds.count("CREW_SWAP") == 6 and "ASSIGN_ENGINEER" in kinds and "REBOOK_AT_RISK" in kinds and "GATE_CHANGE" in kinds and kinds[-1] == "DELAY"
     assert S.simulate("EK812", s["actions"])["ok"]
 
 
@@ -197,7 +197,7 @@ def test_orchestrator_writing_specialist_actions_itself_gets_their_bundles(monke
                                                         {"kind": "ASSIGN_ENGINEER", "item_id": "M-1", "engineer_id": "E3"}]}]}
     fake_llm(monkeypatch, {agent.SYSTEM: plan})
     s = agent.get_report("EK812", force=True)["suggestions"][0]
-    assert set(s["use"]) == {"CREW", "REBOOK", "MAINTENANCE"} and S.simulate("EK812", s["actions"])["ok"]
+    assert set(s["use"]) == {"CREW", "REBOOK", "MAINTENANCE", "GATES"} and S.simulate("EK812", s["actions"])["ok"]
     assert not any(a["kind"] == "CREW_AUTOSWAP" or (a["kind"] == "REBOOK" and not a.get("pax_id")) for a in s["actions"])
 
 
@@ -279,7 +279,7 @@ def test_llm_reason_shown_only_when_true_to_the_facts(monkeypatch):
 def test_shorter_hold_is_a_third_real_option(monkeypatch):
     fake_llm(monkeypatch, {})
     with closing(S.connect()) as con:  # a shorter hold exists only when bags need longer than passengers: a remote stand (+15 min)
-        con.execute("UPDATE flights SET gate = 'R6' WHERE id = 'AZ411'")
+        con.execute("UPDATE flights SET gate = 'V95' WHERE id = 'AZ411'")
     monitor.apply_eta("AZ410", 60, "test")
     t = SP.team("AZ410")
     h = next(h for h in t["passengers"]["holds"] if h["flight_id"] == "LH1830")
@@ -293,7 +293,7 @@ def test_shorter_hold_is_a_third_real_option(monkeypatch):
     s = raw["suggestions"][0]
     assert s["use"][:2] == ["CREW", "HOLD_SHORT:LH1830"]  # a raw short hold maps to the shorter bundle
     # the LLM left out the engineer assignment and the rebookings: code completes the scenario and says so
-    assert s["completed_by_code"] == ["MAINTENANCE", "REBOOK"] and {"ASSIGN_ENGINEER", "REBOOK"} <= {a["kind"] for a in s["actions"]}
+    assert s["completed_by_code"] == ["MAINTENANCE", "REBOOK", "GATES"] and {"ASSIGN_ENGINEER", "REBOOK"} <= {a["kind"] for a in s["actions"]}
 
 
 def test_maintenance_agent_ignores_items_on_on_time_flights():
@@ -322,4 +322,35 @@ def test_monitor_replan_runs_the_specialists(monkeypatch):
         kinds = {r["kind"] for r in S.rows(con, "SELECT kind FROM agent_events")}
         ev = S.one(con, "SELECT detail FROM agent_events WHERE kind = 'REPLANNED' AND flight_id = 'EK812'")
     assert {"CREW_AGENT", "PAX_AGENT", "MX_AGENT"} <= kinds
-    assert set(json.loads(ev["detail"])["agents"]) == {"crew", "passengers", "maintenance"}
+    assert set(json.loads(ev["detail"])["agents"]) == {"crew", "passengers", "maintenance", "gates"}
+
+
+# ---------- Gate agent ----------
+def test_gate_agent_lends_the_gate_a_delay_frees_to_the_one_flight_that_fits():
+    g = SP.gate_agent()  # the Gates demo: before AA70 is late, LH1124 (the one onward flight without a gate) has nowhere to go
+    picks = {p["flight_id"]: p for p in g["picks"]}
+    assert g["guard"]["ok"] and picks["EK813"]["type"] == "free" and picks["EK813"]["owner"] == "EK812"  # off remote V94
+    assert "LH1124" in g["unplaced"]
+    monitor.apply_eta("AA70", 60, "test")  # AA70 lands T+270: its gate B26 stands empty until T+255
+    g = SP.gate_agent()
+    assert {(p["gate"], p["flight_id"], p["type"], p["owner"]) for p in g["picks"]} == {("A13", "EK813", "free", "EK812"), ("B26", "LH1124", "lend", "AA70")}
+    assert SP.gates_for("AA70", g)["actions"] == [{"kind": "GATE_LOAN", "flight_id": "LH1124", "gate": "B26"}]
+    assert next(n for n in SP.gate_facts()["needs"] if n["flight_id"] == "LH1124")["options"][0]["gate"] == "B26"
+
+
+def test_gate_agent_llm_pick_is_used_only_from_its_options(monkeypatch):
+    fake_llm(monkeypatch, {SP.GATE_SYSTEM: {"summary": "Move EK813 to B12.", "picks": [
+        {"flight_id": "EK813", "gate": "B12", "reason": "free contact gate for EK813"}, {"flight_id": "LH1124", "gate": "V95", "reason": "x"}]}})
+    g = SP.gate_agent()
+    picks = {p["flight_id"]: p for p in g["picks"]}
+    assert picks["EK813"]["gate"] == "B12" and picks["EK813"]["by"] == "LLM" and "LH1124" not in picks
+
+
+def test_gate_loan_guard_refuses_a_borrower_still_there_when_the_late_aircraft_lands():
+    bad = S.simulate("TK1589", [{"kind": "GATE_LOAN", "flight_id": "LH1034", "gate": "A20"}])  # TK1589 lands T+40, LH1034 leaves T+90
+    assert not bad["ok"] and "GATE LOAN" in bad["reason"]
+    assert not S.simulate("EK812", [{"kind": "GATE_LOAN", "flight_id": "LH900", "gate": "A13"}])["ok"]  # a free gate is not a loan
+    r = S.decide("QR069", "loan", [{"kind": "GATE_LOAN", "flight_id": "LH900", "gate": "C4"}], "Ops Ctl", PIN)
+    assert r["status"] == "APPROVED"
+    c4 = next(b for b in SP.gates_view()["board"] if b["gate"] == "C4")
+    assert c4["state"] == "lent" and c4["now"] == "LH900" and [x["id"] for x in c4["then"]] == ["QR070"]

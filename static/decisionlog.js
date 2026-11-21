@@ -167,19 +167,19 @@ const DecisionLog = (() => {
   const OPST = { APPROVED: ["EXECUTED", "Executed"], PENDING: ["AWAITING_APPROVAL", "Awaiting approval"], BLOCKED: ["BLOCKED", "Blocked by guards"],
     REJECTED: ["REJECTED", "Rejected"], ROLLED_BACK: ["ROLLED_BACK", "Rolled back"] };
   const KCAT = { CREW_SWAP: "crew", CREW_AUTOSWAP: "crew", REBOOK: "passengers", REBOOK_AT_RISK: "passengers", REBOOK_TIERS: "passengers",
-    ASSIGN_ENGINEER: "maintenance", SIGN_OFF: "maintenance", GATE_CHANGE: "gate", DELAY: "network", DEPARTURE_RELEASE: "network" };
-  const ORIGIN_PAGES = new Set(["Decision hub", "Crew page", "Passengers page", "Maintenance page", "Live report", "Decision log"]);
+    ASSIGN_ENGINEER: "maintenance", SIGN_OFF: "maintenance", GATE_CHANGE: "gate", GATE_LOAN: "gate", DELAY: "network", DEPARTURE_RELEASE: "network" };
+  const ORIGIN_PAGES = new Set(["Decision hub", "Crew page", "Passengers page", "Maintenance page", "Gates page", "Live report", "Decision log"]);
   function opOf(c, outbound) {
     const [origin, who] = c.source.includes(" · ") ? c.source.split(" · ") : [c.source, ""];
     const where = c.id.startsWith("A") ? "Connecting passengers page" : c.kinds.includes("SIGN_OFF") ? "Maintenance page · engineer sign-off"
       : origin === "Passenger Impact Agent" ? "Connecting passengers page" : ORIGIN_PAGES.has(origin) ? origin : "Controller";
     const [code, label] = OPST[c.status] || [c.status, c.status];
     // which agent each action comes from: crew swaps = Crew agent, rebookings and onward holds = Passenger agent,
-    // engineer assignments = Maintenance agent, the outbound's retime / gate / release = Orchestrator
+    // engineer assignments = Maintenance agent, gate loans and gate moves = Gate agent, the outbound's retime / release = Orchestrator
     const agents = {};
     for (const a of c.actions || []) {
       const k = /^CREW/.test(a.kind) ? "Crew agent" : /^REBOOK/.test(a.kind) || (a.kind === "DELAY" && a.flight_id !== outbound) ? "Passenger agent"
-        : a.kind === "ASSIGN_ENGINEER" ? "Maintenance agent" : "Orchestrator";
+        : a.kind === "ASSIGN_ENGINEER" ? "Maintenance agent" : /^GATE_/.test(a.kind) ? "Gate agent" : "Orchestrator";
       agents[k] = (agents[k] || 0) + 1;
     }
     return { op: c.id, label_id: `OP-${c.id.slice(1)}`, status_code: code, status_label: label, summary: c.title, ts: c.ts, at: String(c.ts).slice(11),

@@ -13,6 +13,7 @@ LIMITS: Final = MappingProxyType({
     "BAG_MCT_MIN": 45,          # minimum connection time for a checked bag to make the onward flight
     "REMOTE_BAG_PENALTY_MIN": 15,  # extra bag transfer time when the inbound parks on a remote stand
     "MAX_ONWARD_HOLD_MIN": 30,  # longest hold any single onward flight may take for connecting passengers
+    "GATE_BUFFER_MIN": 15,      # a lent gate must be empty this long before the delayed aircraft that owns it arrives
 })
 VULNERABLE: Final = frozenset({"UM", "PRM", "MEDICAL", "INFANT", "ELDERLY"})
 TIER_RANK: Final = MappingProxyType({"UM": 0, "PRM": 1, "MEDICAL": 2, "INFANT": 3, "ELDERLY": 4, "STANDARD": 9})
@@ -83,6 +84,23 @@ def check_onward_hold(flight, minutes):
     """Holding someone else's departure to protect connections is capped; longer delays cascade into the network."""
     if flight["kind"] == "ONWARD" and minutes > LIMITS["MAX_ONWARD_HOLD_MIN"]:
         raise GuardViolation(f"HOLD: {flight['id']} may be held at most {LIMITS['MAX_ONWARD_HOLD_MIN']} min (asked {minutes})")
+
+
+def check_gate_loan(gate, borrower, holder, holder_inbound, borrower_dep):
+    """A contact gate whose aircraft is late may be lent to another flight, but only if that flight has left (plus the buffer)
+    before the late aircraft reaches the gate. borrower_dep = the borrower's real departure (minutes from now)."""
+    if gate["kind"] != "CONTACT":
+        raise GuardViolation(f"GATE LOAN: {gate['id']} is a remote stand; only contact gates are lent")
+    if not holder or holder["id"] == borrower["id"]:
+        raise GuardViolation(f"GATE LOAN: {gate['id']} has no other flight to lend it")
+    if not holder_inbound or holder_inbound["status"] != "ENROUTE" or holder_inbound["delay_min"] <= 0:
+        raise GuardViolation(f"GATE LOAN: {holder['id']}'s aircraft is not a delayed arrival, so {gate['id']} is not idle")
+    if borrower_dep < 0:
+        raise GuardViolation(f"GATE LOAN: {borrower['id']} has already departed")
+    need = borrower_dep + LIMITS["GATE_BUFFER_MIN"]
+    if need > holder_inbound["eff"]:
+        raise GuardViolation(f"GATE LOAN: {borrower['id']} leaves {gate['id']} at T+{borrower_dep}, but {holder_inbound['id']} reaches it at "
+                             f"T+{holder_inbound['eff']} (needs {LIMITS['GATE_BUFFER_MIN']} min clear)")
 
 
 def bag_mct(remote_stand):

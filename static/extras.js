@@ -183,6 +183,11 @@ const Extras = (() => {
       <div><b class="${late.length ? "bad" : "ok"}">${late.length}</b><span>will delay a release</span></div>
       <div><b>${n((i) => i.severity !== "NO-GO" && i.status !== "SIGNED")}</b><span>deferrable (MEL)</span></div>
       <div><b>${n((i) => i.status === "SIGNED")}</b><span>signed off</span></div>`;
+    if (S.focusFlight) { // opened from the Decision hub / live report for one flight: select that flight's most urgent open item
+      const f = S.focusFlight, mine = items.filter((i) => (i.inbound === f || i.outbound === f) && i.status !== "SIGNED");
+      X.mxSel = (mine.find((i) => i.blocks_departure) || mine[0] || items.find((i) => i.inbound === f) || {}).id || X.mxSel;
+      S.focusFlight = null; X.mxScroll = true;
+    }
     if (!items.some((i) => i.id === X.mxSel)) X.mxSel = items[0]?.id;
     const group = (i) => (i.status === "SIGNED" ? "Signed off" : i.blocks_departure ? "Blocking a departure" : "Deferrable (MEL) · does not block release");
     q("#mx-out").innerHTML = `<div class="ga-inbox"><div class="card ga-list" tabindex="0" role="listbox" aria-label="Maintenance items">${items.map((i, j) => {
@@ -195,6 +200,7 @@ const Extras = (() => {
     const box = q("#mx-out .ga-list");
     inboxList(box, selectMx);
     selectMx(X.mxSel);
+    if (X.mxScroll) { X.mxScroll = false; q(`#mx-out [data-k="${CSS.escape(X.mxSel || "")}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }); }
   }
   function selectMx(id) {
     X.mxSel = id; markOn(q("#mx-out .ga-list"), id);

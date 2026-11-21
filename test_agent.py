@@ -51,7 +51,7 @@ def test_decision_elsewhere_is_noticed_and_replanned(monkeypatch):
     monkeypatch.setattr(agent, "llm_json", f)
     monitor.tick(force=True)
     S.mark_task_done("EK812", "CLEAN")  # ramp update elsewhere in the system
-    S.log_call("EK812", "Ramp control", "Ambulift now at R4.")
+    S.log_call("EK812", "Ramp control", "Ambulift now at V94.")
     r = monitor.tick(force=True)
     ek = next(x for x in r["replanned"] if x["flight_id"] == "EK812")
     assert ek["changes"] and notifications()

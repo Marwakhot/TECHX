@@ -101,15 +101,15 @@ def test_illegal_crew_swaps_blocked():
 
 def test_gate_change_needs_controller_pin():
     with pytest.raises(PermissionError):
-        S.decide("EK812", "gate", [{"kind": "GATE_CHANGE", "flight_id": "EK813", "gate": "A7"}], "Ops Ctl", "0000")
-    r = S.stage_controller_schedule_change("EK812", "gate", [{"kind": "GATE_CHANGE", "flight_id": "EK813", "gate": "A7"}])
-    assert r["status"] == "PENDING" and state()["outbound"]["gate"] == "R4"
+        S.decide("EK812", "gate", [{"kind": "GATE_CHANGE", "flight_id": "EK813", "gate": "A13"}], "Ops Ctl", "0000")
+    r = S.stage_controller_schedule_change("EK812", "gate", [{"kind": "GATE_CHANGE", "flight_id": "EK813", "gate": "A13"}])
+    assert r["status"] == "PENDING" and state()["outbound"]["gate"] == "V94"
     with pytest.raises(PermissionError):
         S.approve_change(r["id"], "Ops Ctl", "0000")
-    assert state()["outbound"]["gate"] == "R4"
+    assert state()["outbound"]["gate"] == "V94"
     assert S.approve_change(r["id"], "Ops Ctl", PIN)["status"] == "APPROVED"
     d = state()
-    assert d["outbound"]["gate"] == "A7" and any("A7" in n["message"] for n in d["notifications"])
+    assert d["outbound"]["gate"] == "A13" and any("A13" in n["message"] for n in d["notifications"])
 
 
 def test_pin_lockout():
@@ -128,7 +128,7 @@ def test_audit_log_is_append_only():
 
 def test_llm_output_is_sanitised():
     plan = agent.validate({"report": "<script>x</script>![a](http://evil/x.png) ok", "suggestions": [{"title": "<b>t</b>", "actions": [
-        {"kind": "DROP_TABLE"}, {"kind": "GATE_CHANGE", "flight_id": "ek813", "gate": "A7"},
+        {"kind": "DROP_TABLE"}, {"kind": "GATE_CHANGE", "flight_id": "ek813", "gate": "A13"},
         {"kind": "DELAY", "flight_id": "EK813; DROP TABLE seats", "minutes": 5}, "junk"]}]})
     assert [a["kind"] for a in plan["suggestions"][0]["actions"]] == ["GATE_CHANGE"] and plan["dropped_actions"] == 3
     assert "<" not in plan["report"] + plan["suggestions"][0]["title"] and "evil" not in plan["report"]

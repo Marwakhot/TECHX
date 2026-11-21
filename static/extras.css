@@ -383,3 +383,8 @@ td.x-best { color:var(--ok); font-weight:700; } td.num, th.num { text-align:righ
 .hub-back { display:inline-block; margin:12px 0 4px; font-weight:600; }
 .hub-ap:not(.g):not(.r) { border-color:var(--ln); background:#fffdf7; } .hub-ap:not(.g):not(.r) h3 { color:var(--ink); }
 @media (max-width:700px) { .hub-ai, .hub-last, .hub-stage { margin-left:0; } .hub-it { grid-template-columns:1fr; gap:4px; } .hub-rvbtn { margin-left:0; } }
+
+/* live report: the top 3 agent suggestions sit in their own highlighted container */
+.card.sugg-box { border:1px solid var(--accent) !important; border-radius:20px !important; padding:24px 26px 26px !important;
+  background:linear-gradient(180deg, #f8e6d3, #fdf4e9) !important; box-shadow:0 10px 30px #c2703d1f !important; }
+.card.sugg-box #sugg > * { background:#fffaf3; border:1px solid var(--line-2); border-radius:14px; padding:16px; }

@@ -1,0 +1,79 @@
+/* Gates tab: full-screen night 3D map, a beige side card (controls, live demo, Gate agent, traffic), the gate board below.
+   body.gt-on is set by the router while this tab is open; every rule is scoped to it or to .gt- */
+body.gt-on, body.gt-on .app { background:linear-gradient(180deg, #02040a 0%, #071027 55%, #0c1b3a 100%) fixed; }
+body.gt-on header.top { background:#02040acc; border-bottom-color:#ffffff14; }
+body.gt-on header.top h1, body.gt-on header.top h1 .muted, body.gt-on header.top button { color:#e9eef8; border-color:#ffffff2e; }
+body.gt-on header.top .burger span { background:#e9eef8; }
+body.gt-on main { max-width:none; padding:76px 0 60px; }
+body.gt-on #view { --ink:#e9eef8; --cream:#e9eef8; --muted:#8e9bb8; --line:#ffffff17; --line-2:#ffffff2a; --panel-2:#ffffff0d; color:var(--ink); }
+body.gt-on #tab .tab-head, body.gt-on #tab > .ga-head { display:none; }
+
+.gt-stage { position:relative; height:calc(100vh - 76px); min-height:560px; background:#02040a; }
+.gt-map { position:absolute; inset:0; }
+.gt-map logostream-airport-3d { display:block; position:absolute; inset:0; height:100%; }
+.gt-load, .gt-err { position:absolute; inset:0; display:grid; place-content:center; gap:8px; color:#8e9bb8; font-size:14px; }
+.gt-hint { position:absolute; left:20px; bottom:44px; right:440px; margin:0; color:#c5cee0; text-shadow:0 1px 3px #000; pointer-events:none; }
+.gt-hint a { pointer-events:auto; color:#e9eef8; }
+
+/* the beige card on the right: its own light tokens */
+.gt-side { --ink:#312726; --cream:#312726; --muted:#7a716e; --line:#3127261a; --line-2:#31272633; --panel-2:#eadcc4; --accent:#c2703d;
+  position:absolute; top:16px; right:16px; bottom:16px; width:400px; overflow:auto; display:flex; flex-direction:column; gap:14px;
+  padding:18px 18px 0; background:#f4ead8; color:var(--ink); border-radius:20px; box-shadow:0 20px 60px #000a; }
+.gt-side h4, .gt-h { margin:0; font-size:15px; font-stretch:118%; letter-spacing:-.03em; }
+.gt-ctl { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px; }
+.gt-clock { font-size:34px; font-weight:600; font-stretch:125%; letter-spacing:-.05em; margin-right:4px; font-variant-numeric:tabular-nums; }
+.gt-t { font:500 13px var(--mono); color:var(--muted); margin-right:auto; }
+.gt-side button { padding:6px 11px; font-size:13px; border-radius:999px; background:var(--ink); color:#f4ead8; border:1px solid var(--ink); }
+.gt-side button.ghost { background:transparent; color:var(--ink); border-color:var(--line-2); }
+.gt-ctl button.on { background:var(--ink); color:#f4ead8; border-color:var(--ink); }
+.gt-demo { padding:14px; border-radius:14px; background:#fbf4e8; border:1px solid var(--line-2); }
+.gt-demo p { margin:4px 0 10px; }
+.gt-demo-row { display:flex; gap:6px; }
+.gt-demo-row select { flex:1; min-width:0; padding:6px 8px; font-size:13px; color:var(--ink); background:#fff; border:1px solid var(--line-2); border-radius:10px; }
+.gt-demo-row select + select { flex:0 0 64px; }
+.gt-feed { list-style:none; margin:10px 0 0; padding:0; }
+.gt-feed li { display:grid; grid-template-columns:14px 1fr; gap:8px; padding:7px 0; font-size:13px; line-height:1.45; animation:gt-in .35s ease-out; }
+.gt-feed li i { width:10px; height:10px; margin-top:4px; border-radius:50%; background:var(--success); }
+.gt-feed .gt-f-run i { background:var(--accent); animation:pulse 1.2s infinite; }
+.gt-feed .gt-f-warn i { background:var(--alert); } .gt-feed .gt-f-bad i { background:var(--error); }
+.gt-feed small { display:block; color:var(--muted); }
+.gt-feed button { margin-top:6px; }
+@keyframes gt-in { from { opacity:0; transform:translateY(4px); } }
+.gt-stats { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; }
+.gt-stats div, .gt-sum div { display:flex; flex-direction:column; gap:2px; padding:10px; border:1px solid var(--line); border-radius:12px; }
+.gt-stats b { font-size:24px; font-weight:600; font-stretch:125%; letter-spacing:-.04em; line-height:1; }
+.gt-stats span { font-size:11px; line-height:1.3; color:var(--muted); }
+.gt-sum { display:grid !important; grid-template-columns:repeat(4, 1fr); gap:8px !important; }
+.gt-sum div { min-width:0 !important; } .gt-sum b { font-size:20px !important; } .gt-sum span { font-size:11px !important; line-height:1.25; }
+.gt-side .al-panel { margin:0; }
+.gt-tabs { display:flex; gap:4px; border-bottom:1px solid var(--line-2); }
+.gt-tabs button, .gt-tabs button.ghost { background:transparent; color:var(--muted); border:0; border-bottom:2px solid transparent; border-radius:0; padding:8px 10px; font-size:14px; }
+.gt-tabs button[aria-selected="true"] { color:var(--ink); border-bottom-color:var(--accent); }
+.gt-flights { list-style:none; margin:0; padding:0; }
+.gt-flights button { width:100%; display:grid; grid-template-columns:auto 1fr auto; gap:0 10px; align-items:baseline; text-align:left; background:transparent;
+  color:var(--ink); border:0; border-bottom:1px solid var(--line); border-radius:0; padding:9px 4px; font-size:14px; }
+.gt-flights button:hover, .gt-flights button.on { background:var(--panel-2); }
+.gt-flights .gt-rt { color:var(--muted); font-size:13px; } .gt-flights .gt-when { font:500 13px var(--mono); }
+.gt-flights .gt-when em { font-style:normal; color:var(--bad); }
+.gt-flights .gt-ph { grid-column:1 / -1; font-size:12px; color:var(--muted); }
+.gt-flights .gt-landing .gt-ph, .gt-flights .gt-taxi-in .gt-ph, .gt-flights .gt-taxi-out .gt-ph, .gt-flights .gt-pushback .gt-ph, .gt-flights .gt-take-off .gt-ph { color:var(--accent); font-weight:600; }
+.gt-flights .gt-gone, .gt-flights .gt-enroute { opacity:.62; }
+.gt-flights .gt-nogate .gt-ph { color:var(--warn); }
+.gt-card { position:sticky; bottom:0; background:#fbf4e8; border:1px solid var(--line-2); border-radius:14px; padding:14px 16px; margin-bottom:12px; box-shadow:0 -8px 24px #3127261a; }
+.gt-card > b { display:block; font-size:18px; font-stretch:125%; letter-spacing:-.04em; padding-right:26px; }
+.gt-card dl { display:grid; grid-template-columns:auto 1fr; gap:2px 12px; margin:10px 0; font-size:13px; }
+.gt-card dt { color:var(--muted); } .gt-card dd { margin:0; } .gt-card p { margin:6px 0; }
+.gt-side .gt-x { position:absolute; top:8px; right:8px; width:28px; height:28px; padding:0; background:transparent; color:var(--ink); border:0; font-size:20px; line-height:1; }
+.gt-plan { list-style:none; margin:0; padding:0; }
+.gt-plan li { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line); font-size:14px; }
+.gt-plan li p { margin:4px 0 2px; font-size:13px; }
+.gt-plan li b { margin-right:6px; }
+.gt-boardcard { margin:28px 24px 0 !important; }
+#gt-board tr.click td { vertical-align:top; } #gt-board tr.click:hover { background:#ffffff0a; }
+@media (max-width:900px) {
+  .gt-stage { height:auto; display:flex; flex-direction:column; }
+  .gt-map { position:relative; height:70vh; }
+  .gt-side { position:relative; inset:auto; width:auto; margin:12px; }
+  .gt-hint { position:static; margin:0 16px 12px; right:auto; }
+  .gt-boardcard { margin:28px 16px 0 !important; }
+}

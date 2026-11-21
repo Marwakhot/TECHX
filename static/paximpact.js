@@ -292,20 +292,27 @@ const PaxImpact = (() => {
   }
 
   // ---------------- events ----------------
+  // Approve = the controller's name + PIN in the approval window, then the rebooking is staged and approved in one go
   async function send(refs) {
-    if (!me) { toast("Enter your name before sending a recommendation", "warn"); return q("#px-me")?.focus(); }
     const rows = Object.fromEntries(P.data.passengers.map((p) => [p.ref, p])), blocked = refs.filter((x) => rows[x] && !feas(rows[x]).ok);
     refs = refs.filter((x) => !blocked.includes(x));
     if (blocked.length) toast(`${blocked.length} passenger(s) need review: passenger or baggage cannot make the connection, so approval is blocked`, "warn");
     if (!refs.length) return;
-    const r = await api("/api/pax/recommend", { flight_id: S.flight, pax_ids: refs, by: me, overrides: P.override });
-    const box = r.staged.map((s) => s.status === "PENDING"
-      ? `<div>⏳ Recommendation <b>#${s.id}</b> for ${s.passengers.length} passenger(s) is <b>awaiting controller approval</b> in the <a href="#/tab/log">approval queue</a>.</div>`
-      : `<div class="bad">⛔ Recommendation #${s.id} for ${s.passengers.length} passenger(s) refused by the guards: ${h(s.reason)}</div>`).join("") +
-      (r.skipped.length ? `<div class="small muted">Not sent: ${r.skipped.map((x) => `${h(x.ref)} (${h(x.reason)})`).join("; ")}</div>` : "");
-    P.sel.clear();
-    await load();
-    q("#px-handoff").innerHTML = `<div class="px2-toast" role="status"><div>${box || "Nothing to send."}<div class="small muted">Sent to the approval queue. A controller confirms each booking (PIN).</div></div><a href="#/tab/log" class="px2-btn">Open queue</a></div>`;
+    askAuth(`Approve rebooking for ${refs.length} passenger(s)<div class="small muted" style="margin-top:6px">Enter your name and controller PIN. The rebooking is checked by the guards and applied at once.</div>`, async (a) => {
+      me = a.controller; try { localStorage.setItem("aviant.me", me); } catch { /* ignore */ }
+      const r = await api("/api/pax/recommend", { flight_id: S.flight, pax_ids: refs, by: me, overrides: P.override });
+      const lines = [];
+      for (const s of r.staged) {
+        if (s.status !== "PENDING") { lines.push(`<div class="bad">⛔ ${s.passengers.length} passenger(s) refused by the guards: ${h(s.reason)}</div>`); continue; }
+        const x = await api("/api/approve", { id: s.id, controller: a.controller, pin: a.pin });
+        lines.push(x.status === "APPROVED" ? `<div>✓ Decision <b>#${s.id}</b> approved: ${s.passengers.length} passenger(s) rebooked.</div>`
+          : `<div class="bad">⛔ Decision #${s.id}: ${h(x.status)} ${h(x.reason || "")}</div>`);
+      }
+      if (r.skipped.length) lines.push(`<div class="small muted">Not sent: ${r.skipped.map((x) => `${h(x.ref)} (${h(x.reason)})`).join("; ")}</div>`);
+      P.sel.clear();
+      await load(); refreshBell();
+      q("#px-handoff").innerHTML = `<div class="px2-toast" role="status"><div>${lines.join("") || "Nothing to approve."}</div><a href="#/tab/log" class="px2-btn">Decision log</a></div>`;
+    });
   }
   const curRows = () => P.data.passengers.filter((p) => tabOf(p) === (P.tab || "decide"));
   const toList = () => q("#px-list", P.root)?.scrollIntoView({ behavior: "smooth", block: "start" });

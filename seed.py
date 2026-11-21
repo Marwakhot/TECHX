@@ -53,17 +53,17 @@ CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT, 
 
 # id, origin, lat, lon, sched arrival, delay, block, km, type, tail, outbound id, outbound dep, outbound gate, pax
 INBOUND = [
-    ("EK812", "DXB", 25.25, 55.36, -75, 75, 380, 4800, "B777", "A6-EQB", "EK813", 15, "R4", 0),
+    ("EK812", "DXB", 25.25, 55.36, -75, 75, 380, 4800, "B777", "A6-EQB", "EK813", 15, "V94", 0),
     ("QR069", "DOH", 25.27, 51.61, 40, 35, 360, 4500, "B788", "A7-BCA", "QR070", 150, "C4", 26),
     ("AC876", "YYZ", 43.68, -79.63, 95, 20, 480, 6300, "B788", "C-GHPQ", "AC877", 220, "C6", 24),
     ("UA960", "ORD", 41.98, -87.90, 130, 0, 510, 6970, "B777", "N2749U", "UA961", 260, "C8", 30),
-    ("ET706", "ADD", 8.98, 38.80, 60, 55, 400, 5300, "A359", "ET-AYA", "ET707", 190, "D2", 22),
-    ("AI121", "DEL", 28.56, 77.10, 110, 10, 480, 6100, "B788", "VT-ANA", "AI122", 240, "D4", 25),
-    ("TK1589", "IST", 40.98, 28.82, 25, 15, 180, 1870, "A320", "TC-JPA", "TK1590", 100, "D6", 20),
-    ("SA260", "JNB", -26.14, 28.25, 170, 40, 590, 8660, "A359", "ZS-SNA", "SA261", 310, "E2", 22),
-    ("MS785", "CAI", 30.12, 31.41, 50, 65, 245, 2900, "A320", "SU-GCA", "MS786", 160, "E4", 24),
-    ("AA70", "DFW", 32.90, -97.04, 210, 0, 580, 8400, "B777", "N717AN", "AA71", 340, "E6", 26),
-    ("AI131", "BOM", 19.09, 72.87, 150, 25, 540, 6600, "B788", "VT-ANB", "AI132", 280, "E8", 24),
+    ("ET706", "ADD", 8.98, 38.80, 60, 55, 400, 5300, "A359", "ET-AYA", "ET707", 190, "B20", 22),
+    ("AI121", "DEL", 28.56, 77.10, 110, 10, 480, 6100, "B788", "VT-ANA", "AI122", 240, "B22", 25),
+    ("TK1589", "IST", 40.98, 28.82, 25, 15, 180, 1870, "A320", "TC-JPA", "TK1590", 100, "A20", 20),
+    ("SA260", "JNB", -26.14, 28.25, 170, 40, 590, 8660, "A359", "ZS-SNA", "SA261", 310, "B24", 22),
+    ("MS785", "CAI", 30.12, 31.41, 50, 65, 245, 2900, "A320", "SU-GCA", "MS786", 160, "A22", 24),
+    ("AA70", "DFW", 32.90, -97.04, 210, 0, 580, 8400, "B777", "N717AN", "AA71", 340, "B26", 26),
+    ("AI131", "BOM", 19.09, 72.87, 150, 25, 540, 6600, "B788", "VT-ANB", "AI132", 280, "B28", 24),
 ]
 # id, dest, dep, km, free seats
 ONWARD = [("LH900", "LHR", 10, 650, 0), ("LH902", "LHR", 150, 650, 10), ("LH906", "LHR", 330, 650, 6),
@@ -91,11 +91,17 @@ MAINTENANCE = [("M-1", "A6-EQB", "Hydraulic system B pressure fluctuation", "NO-
                ("M-4", "A7-BCA", "Galley oven 2 inop (MEL)", "DEFERRABLE", "OPEN"),
                ("M-5", "VT-ANA", "Tyre pressure check", "NO-GO", "SIGNED")]
 # Every gate a flight is parked at is in the gates table (so gate changes and the remote-stand rule see it): the stands of the
-# outbound legs come from INBOUND (an "R" stand is remote), plus the spare / onward gates below.
-GATES = [("R6", "REMOTE", None), ("A5", "CONTACT", "LH1282"), ("A7", "CONTACT", None), ("B12", "CONTACT", None),
-         ("B14", "CONTACT", "LH760")] + [(f[12], "REMOTE" if f[12].startswith("R") else "CONTACT", f[10]) for f in INBOUND]
+# outbound legs come from INBOUND (a "V" stand is remote). Every id is a real Frankfurt gate / stand, so the 3D map on the
+# Gates tab parks each aircraft at its real position, plus the spare / onward gates below.
+GATES = [("V95", "REMOTE", None), ("V106", "REMOTE", None), ("V108", "REMOTE", None), ("A5", "CONTACT", "LH1282"), ("A13", "CONTACT", None),
+         ("B12", "CONTACT", None), ("A15", "CONTACT", "LH760")] + [
+    # every onward flight has its gate except LH1124: the Gates demo (AA70 reported 60 min late) frees B26, and LH1124 is the
+    # one flight that fits that window, so the Gate agent's answer is the same on every run
+    (g, "CONTACT", fl) for g, fl in (("A1", "LH900"), ("A2", "LH902"), ("A3", "LH906"), ("A4", "LH1120"), ("A11", "LH1128"),
+                                      ("A14", "LH400"), ("A16", "LH404"), ("A17", "LH1286"), ("A18", "LH1034"), ("A19", "LH1040"),
+                                      ("A21", "LH1044"), ("A23", "LH1830"), ("A24", "LH1836"), ("A25", "LH1500"), ("A26", "LH1504"))] + [(f[12], "REMOTE" if f[12].startswith("V") else "CONTACT", f[10]) for f in INBOUND]
 ONWARD_GATES = {flight: gate for gate, _, flight in GATES if flight and flight.startswith("LH")}  # onward flights without one: not yet assigned
-SEED_VERSION = "2"  # bump when the generated data changes: an older database is rebuilt on start (audit replay re-seeds from this code)
+SEED_VERSION = "4"  # bump when the generated data changes: an older database is rebuilt on start (audit replay re-seeds from this code)
 TASKS = [("DEBOARD", "Deboarding", 25, ""), ("BAGS_OFF", "Ramp bags unload", 30, ""), ("MX_CHECK", "Maintenance check", 40, ""),
          ("CLEAN", "Cabin cleaning", 25, "DEBOARD"), ("CATERING", "Catering", 30, "DEBOARD"), ("FUEL", "Fuelling", 35, "DEBOARD"),
          ("BAGS_ON", "Ramp bags load", 30, "BAGS_OFF"), ("BOARDING", "Boarding", 35, "CLEAN,CATERING,FUEL,MX_CHECK"),
@@ -107,7 +113,7 @@ EK812_CALLS = [
                              "we need a full standby crew."),
     ("T-20", "Transfer desk", "45 tight connections off EK812, two unaccompanied minors for London and three wheelchair passengers. "
                               "LH900 to Heathrow is already boarding."),
-    ("T-10", "Ramp control", "EK812 is going onto remote stand R4, no jet bridge. Ambulift is 25 minutes out, that's a problem for the PRMs.")]
+    ("T-10", "Ramp control", "EK812 is going onto remote stand V94, no jet bridge. Ambulift is 25 minutes out, that's a problem for the PRMs.")]
 # AZ410 (Rome -> Frankfurt): the live-demo flight. ON TIME at the start, so the agents recommend nothing. Its problems are
 # latent and only appear once a delay is stated on a call (~45+ min), so the agents have something to solve in all three areas:
 #  - crew:  the captain and first officer have already flown today (25 / 30 min of duty left); a late inbound pushes AZ411 back
@@ -115,7 +121,7 @@ EK812_CALLS = [
 #  - mx:    a NO-GO weather-radar item from the tech log with a 70-min inspection that fits on schedule but not after a delay
 # Built AFTER the rest with its own random generator, so every other flight's data stays exactly the same.
 DEMO = {"id": "AZ410", "origin": "FCO", "lat": 41.80, "lon": 12.25, "arr": 60, "block": 115, "km": 960, "type": "A320",
-        "tail": "EI-DTB", "out": "AZ411", "dep": 180, "gate": "C10", "mx_minutes": 70,
+        "tail": "EI-DTB", "out": "AZ411", "dep": 180, "gate": "C11", "mx_minutes": 70,
         "duty": [430, 425, 0, 0, 0, 0],  # CPT, FO already on duty; cabin crew report fresh
         "standby": [("SB-A320-7", "CPT", "A320", "STANDBY", 0, "Crew room T2", 18), ("SB-A320-8", "FO", "A320", "STANDBY", 0, "Crew room T1", 9)],
         "mx": ("M-6", "EI-DTB", "Weather radar intermittent (tech log)", "NO-GO", "OPEN"),

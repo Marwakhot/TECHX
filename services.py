@@ -20,7 +20,7 @@ if os.getenv("VERCEL") and not DB.startswith("/tmp/"):
     DB = "/tmp/" + os.path.basename(DB)
 MCT, MAX = G.LIMITS["MCT_MIN"], G.LIMITS["MAX_FDP_MIN"]
 F_SQL = "SELECT f.*, f.t_min + f.delay_min AS eff FROM flights f"
-KINDS = ("DELAY", "GATE_CHANGE", "CREW_SWAP", "CREW_AUTOSWAP", "REBOOK", "REBOOK_AT_RISK", "REBOOK_TIERS", "ASSIGN_ENGINEER", "DEPARTURE_RELEASE")
+KINDS = ("DELAY", "GATE_CHANGE", "GATE_LOAN", "CREW_SWAP", "CREW_AUTOSWAP", "REBOOK", "REBOOK_AT_RISK", "REBOOK_TIERS", "ASSIGN_ENGINEER", "DEPARTURE_RELEASE")
 STATE_TABLES = ("flights", "seats", "bags", "crew", "maintenance", "gates", "tasks")  # what audit replay must reproduce
 # Each passenger's minimum connection (needs aliases p = passengers, s = seats): a passenger already moved by an approved
 # rebooking may keep a connection down to REBOOKED_MCT_MIN; everyone else needs the hub MCT.
@@ -404,6 +404,21 @@ def _apply(con, fid, a, chaos=False):
         con.execute("UPDATE flights SET gate = ? WHERE id = ?", (g["id"], f["id"]))
         return [("Ramp control", f"{f['id']} moves to {g['id']}"), (f"Gate agents {g['id']}", f"{f['id']} now at {g['id']}"),
                 ("PRM assistance", f"{f['id']} boarding from {g['id']} ({g['kind'].lower()})")]
+    if k == "GATE_LOAN":  # the Gate agent lends the idle gate of a late arrival to a flight that is gone before it lands
+        g = _get(con, "gates", a.get("gate"), "gate")
+        f = one(con, F_SQL + " WHERE f.id = ?", (str(a.get("flight_id") or ""),))
+        if not f or f["kind"] == "INBOUND":
+            raise GuardViolation(f"Unknown or inbound flight {a.get('flight_id')!r}: only a departing flight can borrow a gate")
+        holder = one(con, "SELECT * FROM flights WHERE id = ?", (g["occupied_by"] or "",))
+        holder_inb = one(con, F_SQL + " WHERE f.kind = 'INBOUND' AND f.next_leg = ?", (g["occupied_by"] or "",))
+        G.check_gate_loan(g, f, holder, holder_inb, f["eff"])
+        con.execute("UPDATE gates SET occupied_by = NULL WHERE occupied_by = ?", (f["id"],))
+        con.execute("UPDATE gates SET occupied_by = ? WHERE id = ?", (f["id"], g["id"]))
+        con.execute("UPDATE flights SET gate = ? WHERE id = ?", (g["id"], f["id"]))
+        back = holder_inb["eff"] - f["eff"]
+        return [("Ramp control", f"{f['id']} moves to {g['id']} until T+{f['eff']}; {holder_inb['id']} takes {g['id']} back at T+{holder_inb['eff']}"),
+                (f"Gate agents {g['id']}", f"{f['id']} boards at {g['id']} (lent: {holder['id']}'s aircraft is {holder_inb['delay_min']} min late, "
+                                           f"gate clear {back} min before it arrives)")]
     if k == "CREW_SWAP":
         member, standby = _get(con, "crew", a.get("crew_id"), "crew member"), _get(con, "crew", a.get("standby_id"), "crew member")
         if member["flight_id"] != fid or member["status"] != "ON_DUTY":

@@ -32,19 +32,23 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/paximpact.js": ("paximpact.js", "text/javascript"), "/paximpact.css": ("paximpact.css", "text/css"),
          "/surfaces.css": ("surfaces.css", "text/css"), "/retro.css": ("retro.css", "text/css"),
          "/flightmap.js": ("flightmap.js", "text/javascript"), "/curveballs.js": ("curveballs.js", "text/javascript"),
-         "/agentlive.js": ("agentlive.js", "text/javascript"), "/agentlive.css": ("agentlive.css", "text/css")}
+         "/agentlive.js": ("agentlive.js", "text/javascript"), "/agentlive.css": ("agentlive.css", "text/css"),
+         "/gates.js": ("gates.js", "text/javascript"), "/gates.css": ("gates.css", "text/css"),
+         "/fra-ground.json": ("fra-ground.json", "application/json")}  # FRA taxiways / runways / stands (OpenStreetMap, ODbL)
 BIG_POST = {"/api/ledger/transcribe": 8_500_000}  # base64 audio; every other POST stays capped at 64 KB
 ASSET = re.compile(r"/(jet|globe)/[a-z0-9-]{1,40}\.(webp|svg)")  # intro + globe images: fixed folders, strict names, no traversal
 FID = r"(?P<fid>[A-Z0-9]{2,8})"
 CID, DID = r"(?P<cid>\d{1,6})", r"(?P<did>\d{1,6})"
-CSP = ("default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-       "font-src https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'")
+# The Gates tab embeds logostream's 3D airport map: its script, and its scene / tail-logo requests to their API.
+CSP = ("default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://airline.logostream.dev; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+       "font-src https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://aviation-api.logostream.dev; frame-ancestors 'none'")
 GET = {"/api/flights": lambda: S.list_flights(), f"/api/flight/{FID}": S.get_turnaround_and_crew_state,
        f"/api/report/{FID}": agent.get_report, "/api/decisions": lambda: S.decisions(),
        f"/api/ledger/{FID}": ledger.view, "/api/replay": lambda: replay.run(), f"/api/replay/{FID}": replay.run,  # per flight: its events + its figures per stage
        # the three pages read their specialist agent's picks (specialists.py) next to the deterministic data
        "/api/maintenance": lambda: specialists.maintenance_view(), "/api/redteam/history": lambda: redteam.history(),
        f"/api/pax/{FID}": specialists.pax_view, f"/api/agents/{FID}/crew": specialists.crew_view, f"/api/agents/{FID}": specialists.team,
+       "/api/gates": lambda: specialists.gates_view(),  # Gates page: gate board, 3D map schedule, the Gate agent's plan
        "/api/calls": lambda: decisions.calls(), f"/api/calls/{CID}/transcript": decisions.transcript,
        "/api/ledger/decisions": lambda: decisions.list_decisions(), f"/api/ledger/decisions/{DID}": decisions.detail,
        "/api/llm": lambda: {"model": agent.MODEL, "key_configured": bool(os.getenv("OPENROUTER_API_KEY"))},
@@ -181,7 +185,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def ensure_db():
-    if not os.path.exists(S.DB) or not seed.has_current_schema(S.DB):
+    # a demo console: every start begins from the same synthetic day (AVIANT_KEEP_DB=1 keeps the data across restarts)
+    if os.getenv("AVIANT_KEEP_DB") != "1" or not os.path.exists(S.DB) or not seed.has_current_schema(S.DB):
         seed.build(S.DB)
     curveballs.ensure()  # U-4 curveball tables + read-only duty trigger (idempotent)
 
@@ -191,7 +196,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     # Localhost only on your machine; on Railway (or with HOST=0.0.0.0) listen on all interfaces so the platform can route to it.
     host = os.getenv("HOST") or ("0.0.0.0" if os.getenv("RAILWAY_ENVIRONMENT") else "127.0.0.1")
-    print(f"Aviant OCC on http://{host}:{port}", flush=True)
+    print(f"Aviant OCC on http://{'localhost' if host == '127.0.0.1' else host}:{port}", flush=True)  # localhost: the 3D map's embed key is bound to it
     if monitor.start_background():
         print(f"Autonomous agent watching all flights every {monitor.INTERVAL_S} s", flush=True)
     ThreadingHTTPServer((host, port), Handler).serve_forever()

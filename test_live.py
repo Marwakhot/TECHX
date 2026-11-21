@@ -54,7 +54,7 @@ def test_call_on_an_on_time_flight_triggers_the_whole_agent_chain(monkeypatch):
     assert "delay 0 min → 60 min" in next(e for e in v["events"] if e["kind"] == "REPLANNING")["summary"]
     assert next(f for f in S.list_flights() if f["id"] == "UA960")["delay_min"] == 60
     rep = S.cached_report("UA960")
-    assert rep and set(rep["agents"]) == {"crew", "passengers", "maintenance"}  # ready before the page reloads
+    assert rep and set(rep["agents"]) == {"crew", "passengers", "maintenance", "gates"}  # ready before the page reloads
 
 
 def test_llm_reading_is_used_when_available(monkeypatch):
@@ -66,7 +66,7 @@ def test_llm_reading_is_used_when_available(monkeypatch):
 
 def test_call_without_a_delay_on_a_landed_flight_records_nothing(monkeypatch):
     offline(monkeypatch)
-    v = follow("EK812", monitor.call_logged("EK812", "Ramp control", "Ambulift now on stand R4."))
+    v = follow("EK812", monitor.call_logged("EK812", "Ramp control", "Ambulift now on stand V94."))
     assert "DELAY_FROM_CALL" not in kinds(v) and v["error"] is None
     assert next(f for f in S.list_flights() if f["id"] == "EK812")["delay_min"] == 75
 

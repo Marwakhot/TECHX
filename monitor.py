@@ -7,8 +7,8 @@ Each tick (background thread on Railway / a long-running server; GET /api/agent/
                        estimate is recorded (audited as ETA_UPDATED, replayable).
   2. DETECT CHANGES  - code fingerprints each flight (delay, ETA, at-risk / vulnerable passengers, crew legality, NO-GO items,
                        turnaround gap, bags, outbound gate/status, latest call). Any difference vs the last tick is a change.
-  3. RE-PLAN         - for every disrupted flight that changed (or whose report was invalidated), the three specialist agents
-                       (specialists.py: Crew, Passengers, Maintenance) run concurrently; each re-decides only if something in
+  3. RE-PLAN         - for every disrupted flight that changed (or whose report was invalidated), the four specialist agents
+                       (specialists.py: Crew, Passengers, Maintenance, Gates) run concurrently; each re-decides only if something in
                        its own area changed. The orchestrator (agent.get_report) then combines their proposals into the live
                        report and the 3 recovery scenarios (LLM, dry-run through the guards, self-repaired), so the Crew,
                        Connecting passengers, Maintenance pages and the Decision hub are ready before anyone opens them.
@@ -239,7 +239,7 @@ def _diff(old, new):
 def _replan(fid, changes, announce):
     with closing(S.connect()) as con:  # marks the start, so the live report can show the agents at work
         _event(con, fid, "REPLANNING", (f"Detected {', '.join(changes)}. " if changes else "") +
-               "Crew, Passenger and Maintenance agents re-checking their areas", {"changes": changes})
+               "Crew, Passenger, Maintenance and Gate agents re-checking their areas", {"changes": changes})
     rep = agent.get_report(fid, force=True)
     top = next((s for s in rep["suggestions"] if s["actions"]), None)
     sim = S.simulate(fid, top["actions"]) if top else None

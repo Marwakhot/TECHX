@@ -1,12 +1,12 @@
 // Live agent activity on a flight's live report. Saving a call starts the agents at once (monitor.call_logged); this strip
 // follows the agent event log step by step (GET /api/agent/live/<flight>/<since>): the call is read for a new delay, the
-// monitor detects the change, the Crew, Passenger and Maintenance agents re-check their areas, the orchestrator rebuilds the
+// monitor detects the change, the Crew, Passenger, Maintenance and Gate agents re-check their areas, the orchestrator rebuilds the
 // report and the 3 scenarios. Read-only: nothing here changes data. When the run ends, the page reloads the report.
 const AgentLive = (() => {
   const L = { fid: null, events: [], closed: true };
   const STEPS = [["call", "Call read"], ["detect", "Monitor"], ["crew", "Crew agent"], ["pax", "Passenger agent"], ["mx", "Maintenance agent"],
-    ["orch", "Orchestrator"]];
-  const KIND = { CREW_AGENT: "crew", PAX_AGENT: "pax", MX_AGENT: "mx" }, AGENT = { crew: "crew", pax: "passengers", mx: "maintenance" };
+    ["gate", "Gate agent"], ["orch", "Orchestrator"]];
+  const KIND = { CREW_AGENT: "crew", PAX_AGENT: "pax", MX_AGENT: "mx", GATE_AGENT: "gate" }, AGENT = { crew: "crew", pax: "passengers", mx: "maintenance", gate: "gates" };
   const name = (k) => STEPS.find((s) => s[0] === k)[1];
   const unprefix = (txt, k) => String(txt || "").replace(new RegExp(`^${name(k)}:\\s*`), "");
   const clock = (ts) => String(ts || "").slice(11, 19);
@@ -42,11 +42,11 @@ const AgentLive = (() => {
       : replanning || replanned || change || done ? ["skip", L.info.enroute ? "No new arrival delay stated on this call"
         : `${L.fid} is already on block: its arrival delay can no longer change`, llm ? "LLM unreachable" : ""]
       : ["run", "Reading the call for a new arrival estimate…"];
-    s.detect = replanning ? ["ok", replanning.summary.replace(/\s*Crew, Passenger and Maintenance agents.*$/, "") || "New call on the system", "", replanning.ts]
+    s.detect = replanning ? ["ok", replanning.summary.replace(/\s*Crew, Passenger(,| and) Maintenance.*agents.*$/, "") || "New call on the system", "", replanning.ts]
       : change ? ["ok", change.summary, "", change.ts]
       : done ? ["skip", "Nothing changed that needs a re-plan"]
       : s.call[0] === "run" ? ["wait", "Compares the flight with its last snapshot"] : ["run", "Comparing the flight with its last snapshot…"];
-    for (const k of ["crew", "pax", "mx"]) {
+    for (const k of ["crew", "pax", "mx", "gate"]) {
       const e = replanning && ev.filter((x) => KIND[x.kind] === k && x.id > replanning.id).at(-1);
       const src = String(e?.detail?.source || "");
       s[k] = e ? ["ok", unprefix(e.summary, k), `re-decided · ${src.startsWith("LLM") ? "LLM" : src.includes("nothing to decide") ? "nothing to choose" : "rules"}`, e.ts]
@@ -56,8 +56,8 @@ const AgentLive = (() => {
     }
     s.orch = replanned ? ["ok", (replanned.summary.split("Re-planned: ")[1] || replanned.summary), "report and 3 scenarios rebuilt", replanned.ts]
       : err ? ["bad", err.summary, "", err.ts]
-      : orch && orch.id > (replanning?.id || 0) ? ["run", "Combining the three proposals into the report and 3 scenarios…"]
-      : done ? ["skip", "Not needed"] : ["wait", "Waits for the three agents"];
+      : orch && orch.id > (replanning?.id || 0) ? ["run", "Combining the four proposals into the report and 3 scenarios…"]
+      : done ? ["skip", "Not needed"] : ["wait", "Waits for the four agents"];
     return s;
   }
 
@@ -86,7 +86,7 @@ const AgentLive = (() => {
   return { start, mount };
 })();
 
-// "What the agent did" section on the Crew, Connecting passengers and Maintenance pages: the page's specialist agent
+// "What the agent did" section on the Crew, Connecting passengers, Maintenance and Gates pages: the page's specialist agent
 // (specialists.py), how it decided, what triggered its last run, every pick with its reason, and its recent runs.
 // Read-only. Collapsible; the open/closed choice is remembered per page while the console is open.
 const AgentPanel = (() => {
