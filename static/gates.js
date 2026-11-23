@@ -6,7 +6,8 @@
 const GatesTab = (() => {
   // logostream embed keys are browser keys bound to one site address each (safe in page source). Add one per deployment.
   const EMBED_KEYS = { "localhost:8000": "emb_edc8eece7f5f7f32879fb27280afaa66",
-    "techx-marwakhots-projects.vercel.app": "emb_cfeab4b2f7bba2c284f30c6f7fe22da9", "techx-git-main-marwakhots-projects.vercel.app": "emb_cfeab4b2f7bba2c284f30c6f7fe22da9" };
+    "techx-marwakhots-projects.vercel.app": "emb_cfeab4b2f7bba2c284f30c6f7fe22da9", "techx-git-main-marwakhots-projects.vercel.app": "emb_cfeab4b2f7bba2c284f30c6f7fe22da9",
+    "techx-hazel.vercel.app": "emb_79e82c7228d46c7973c79b3bce098910" };
   const EMBED_KEY = EMBED_KEYS[location.host];
   const SCRIPT = "https://airline.logostream.dev/embed/v1/airport-3d.js";
   const AIRLINE = { EK: "UAE", QR: "QTR", AC: "ACA", UA: "UAL", ET: "ETH", AI: "AIC", TK: "THY", SA: "SAA", MS: "MSR", AA: "AAL", LH: "DLH", AZ: "ITY" };
